@@ -80,13 +80,14 @@ func retryAfter(resp *http.Response, fallback time.Duration) time.Duration {
 
 // engine downloads the selected files of one link.
 type engine struct {
-	cfg  *config
-	api  *apiClient
-	http *http.Client
-	lim  *rateLimiter
-	tree *tree
-	ctl  *controlFile
-	prog *progress
+	cfg   *config
+	api   *apiClient
+	http  *http.Client
+	lim   *rateLimiter
+	tree  *tree
+	ctl   *controlFile
+	prog  *progress
+	space *spaceGuard // nil with --no-space-check, or when free space is unknown
 }
 
 // job is one file being downloaded.
@@ -101,6 +102,11 @@ type job struct {
 	verify bool       // compute and check the MAC for this file
 	fold   cipher.Block
 	f      *os.File
+
+	// For the space guard: bytes this file still needed when it started, and bytes
+	// checkpointed since, so other files can see what it has yet to write.
+	spaceNeed    atomic.Int64
+	spaceWritten atomic.Int64
 }
 
 // fileResult is what happened to one file.
@@ -151,6 +157,10 @@ func (e *engine) fetchFile(ctx context.Context, n *node, row *slot) (fileResult,
 	if err := os.MkdirAll(filepath.Dir(final), 0o755); err != nil {
 		return 0, err
 	}
+	if err := e.space.claim(j, fileNeed(e.cfg, e.tree, e.ctl, n)); err != nil {
+		return 0, err
+	}
+	defer e.space.release(j)
 
 	macBudget := e.cfg.retries
 	if macBudget == 0 {
@@ -169,6 +179,8 @@ func (e *engine) fetchFile(ctx context.Context, n *node, row *slot) (fileResult,
 			return 0, fmt.Errorf("MAC mismatch after %d download(s) — the file on MEGA may be corrupt", macFails)
 		}
 		warnf("%s failed verification (MAC mismatch) — deleting and downloading again (%d/%d)", n.relPath, macFails+1, macBudget)
+		j.spaceNeed.Store(n.size) // the .part was deleted: all of it is needed again
+		j.spaceWritten.Store(0)
 	}
 }
 
@@ -326,7 +338,12 @@ func (j *job) prepare() error {
 	}
 	j.f = f
 	if st.Mode == modeParallel {
-		// Preallocate (sparsely) so every worker can write at its own offset.
+		// Size the file up front (sparsely) so every worker can write at its own
+		// offset. On Windows the file must be flagged sparse first, or NTFS
+		// allocates it all and zero-fills ahead of every out-of-order write.
+		if err := markSparse(f); err != nil {
+			debugf("%s: cannot mark the .part sparse (%v); continuing", n.relPath, err)
+		}
 		if err := f.Truncate(n.size); err != nil {
 			return err
 		}
@@ -608,6 +625,7 @@ func (j *job) record(ci int, done int64, macs [][16]byte) {
 	j.e.ctl.update(func() {
 		st := j.st
 		c := st.Chunks[ci]
+		j.spaceWritten.Add(done - c.Done)
 		c.Done = done
 		for _, m := range macs {
 			c.MACs = append(c.MACs, block16(m))

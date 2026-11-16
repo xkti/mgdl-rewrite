@@ -149,6 +149,17 @@ func (c *controlFile) get(handle string) *fileState {
 	return c.data.Files[handle]
 }
 
+// progress reports a file's checkpointed bytes and recorded size, if it has state.
+func (c *controlFile) progress(handle string) (done, size int64, ok bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	s := c.data.Files[handle]
+	if s == nil {
+		return 0, 0, false
+	}
+	return s.doneBytes(), s.Size, true
+}
+
 // put records a new state for a file.
 func (c *controlFile) put(handle string, s *fileState) {
 	c.mu.Lock()

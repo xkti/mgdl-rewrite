@@ -38,6 +38,7 @@ type config struct {
 	verify         bool
 	verifyExisting bool
 	limitRate      int64
+	noSpaceCheck   bool
 	verbose        bool
 	logFile        string
 }
@@ -107,6 +108,8 @@ func parseArgs(argv []string) (*config, error) {
 			cfg.verify = false
 		case "verify-existing":
 			cfg.verifyExisting = true
+		case "no-space-check":
+			cfg.noSpaceCheck = true
 		case "limit-rate":
 			rate = val
 		case "i", "input":
@@ -283,6 +286,7 @@ Transfer:
                           request (default %s)
       --direct            don't use a proxy; fetch from MEGA directly
   -i, --input FILE        read links from FILE, one per line ("-" = stdin)
+      --no-space-check    don't check for free disk space before downloading
 
 Verification:
       --no-verify         decrypt only; skip the MAC check

@@ -157,22 +157,34 @@ func processLink(ctx context.Context, cfg *config, api *apiClient, hc *http.Clie
 	if err != nil {
 		return runStats{}, err
 	}
+	space := checkLinkSpace(cfg, t, ctl, files)
 	if cfg.dryRun {
-		dryRun(cfg, t, ctl, files)
+		dryRun(cfg, t, ctl, files, space)
 		return runStats{}, nil
 	}
 	if err := checkModes(cfg, t, ctl, files); err != nil {
 		return runStats{}, err
 	}
-	return downloadLink(ctx, cfg, api, hc, t, ctl, files)
+	var guard *spaceGuard
+	switch {
+	case cfg.noSpaceCheck:
+	case space.err != nil:
+		warnf("cannot determine free space in %s (%v); not checking it", space.dir, space.err)
+	case space.short():
+		return runStats{}, space.asError()
+	default:
+		debugf("space: %s to download, %s free in %s", formatBytes(space.need), formatBytes(space.free), space.dir)
+		guard = newSpaceGuard(space.dir)
+	}
+	return downloadLink(ctx, cfg, api, hc, t, ctl, files, guard)
 }
 
 // downloadLink runs the file worker pool for one link.
 func downloadLink(ctx context.Context, cfg *config, api *apiClient, hc *http.Client,
-	t *tree, ctl *controlFile, files []*node) (runStats, error) {
+	t *tree, ctl *controlFile, files []*node, space *spaceGuard) (runStats, error) {
 
 	prog := newProgress(t.title(), files, cfg.jobs)
-	e := &engine{cfg: cfg, api: api, http: hc, lim: newRateLimiter(cfg.limitRate), tree: t, ctl: ctl, prog: prog}
+	e := &engine{cfg: cfg, api: api, http: hc, lim: newRateLimiter(cfg.limitRate), tree: t, ctl: ctl, prog: prog, space: space}
 
 	// The saver outlives ctx so the final checkpoint is written after Ctrl+C.
 	saveCtx, stopSaver := context.WithCancel(context.Background())
@@ -240,7 +252,7 @@ func downloadLink(ctx context.Context, cfg *config, api *apiClient, hc *http.Cli
 }
 
 // dryRun reports what a download would do, without transferring or writing anything.
-func dryRun(cfg *config, t *tree, ctl *controlFile, files []*node) {
+func dryRun(cfg *config, t *tree, ctl *controlFile, files []*node, space spaceReport) {
 	fmt.Printf("%s\n", t.title())
 	fmt.Printf("  output:  %s\n", t.baseDir(cfg.output))
 	fmt.Printf("  control: %s\n", ctl.path)
@@ -286,6 +298,16 @@ func dryRun(cfg *config, t *tree, ctl *controlFile, files []*node) {
 		fmt.Printf("  %-*s  %s\n", nameW, truncate(n.relPath, 50), what)
 	}
 	fmt.Printf("\n%d file(s) selected, %s to transfer\n", len(files), formatBytes(remain))
+	switch {
+	case cfg.noSpaceCheck:
+	case space.err != nil:
+		fmt.Printf("free space in %s is unknown (%v)\n", space.dir, space.err)
+	case space.short():
+		fmt.Printf("%s\n", colour("31", fmt.Sprintf("NOT ENOUGH SPACE: %s needed on disk, %s free in %s — a real run would stop here",
+			formatBytes(space.need+spaceMargin(space.need)), formatBytes(space.free), space.dir)))
+	default:
+		fmt.Printf("%s needed on disk, %s free in %s\n", formatBytes(space.need), formatBytes(space.free), space.dir)
+	}
 }
 
 func fileExists(p string) bool {

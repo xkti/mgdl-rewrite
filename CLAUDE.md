@@ -58,7 +58,16 @@ Tests are hermetic (`e2e_test.go` runs a fake API + storage + proxy with
 - **Final name means verified.** Data goes to `NAME.part`; rename only after the
   MAC matches (or verification is off). Mismatch → delete + redownload, bounded by
   `-r` (3 when `-r 0`).
-- **Parallel `.part` files are preallocated; sequential ones never are.** Resuming a
+- **Free space is checked, sparse files are used** (`space.go`, `disk_*.go`). Up
+  front: the selection's remaining need (`fileNeed`: 0 if complete, size − done if
+  resumable) plus headroom (1 MiB + 0.5%) must fit, or the link stops before any
+  request. Per file at start (`spaceGuard.claim`): its need plus what in-flight files
+  still have to write (`spaceNeed − spaceWritten`, updated in `record`). A shortfall
+  is a `localError` (no retries). Unknown free space warns and skips the check;
+  `--no-space-check` disables it. Real preallocation was benchmarked and rejected:
+  same write speed on ext4, no fragmentation win on a full disk.
+- **Parallel `.part` files are sized up front (sparse; `markSparse` on Windows so
+  NTFS doesn't zero-fill ahead of out-of-order writes); sequential ones never are.** Resuming a
   parallel partial with `--sequential` is refused up front (`checkModes`).
 - **Retries:** per chunk, counter reset after ≥ 8 MiB of progress; stalls (60s
   silent) are retried. Throttling — HTTP 429/503/509 and API -4/-6 — is waited out

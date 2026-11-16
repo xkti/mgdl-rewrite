@@ -48,6 +48,7 @@ Interrupted? Run the same command again and it picks up where it stopped.
 | `--verify-existing` | | Re-verify completed files on disk instead of trusting them. |
 | `--limit-rate RATE` | | Total bandwidth cap, e.g. `40M`. |
 | `-i, --input FILE` | | Read links from a file (`-` = stdin). `#` comments allowed. |
+| `--no-space-check` | | Don't check free disk space before downloading. |
 | `-v, --verbose` | | Log every stage to stderr. `MGDL_DEBUG=1` does the same. |
 | `--log FILE` | | Also write detailed logs to a file. |
 
@@ -70,6 +71,11 @@ Interrupted? Run the same command again and it picks up where it stopped.
   boundaries, so resuming never re-reads data from disk; at most the last couple of
   seconds of transfer are fetched again. The control file is deleted once
   everything has finished.
+- **Disk space** is checked before anything starts: if what the selection still
+  needs (counting only what's left of partial downloads) doesn't fit, mgdl stops
+  and says how much is missing. Each file is re-checked as it starts, allowing for
+  what the files already downloading still have to write. `.part` files are sparse
+  (flagged sparse on NTFS), so they only take up space as data arrives.
 - **Output**: a live dashboard on a terminal; plain timestamped status lines every
   10s when stdout is piped or redirected.
 
