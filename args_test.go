@@ -147,3 +147,43 @@ func TestSanitizeName(t *testing.T) {
 		}
 	}
 }
+
+// Every way a link can be cut short says so, rather than a misleading error.
+func TestParseLinkTruncated(t *testing.T) {
+	key43 := strings.Repeat("A", 43)
+	key22 := strings.Repeat("B", 22)
+	file := "https://mega.nz/file/AbCdEfGh#"
+	folder := "https://mega.nz/folder/AbCdEfGh#"
+
+	var cut []string
+	for n := 1; n <= 5; n++ { // covers every length mod 4, incl. invalid base64 ones
+		cut = append(cut, file+key43[:43-n], folder+key22[:22-n])
+	}
+	cut = append(cut,
+		file+key43+"A", // one too many
+		file, folder,   // nothing after #
+		"https://mega.nz/file/AbCdEfGh",
+		"https://mega.nz/file/AbCdE#"+key43, // short ID
+		folder+key22+"/folder/Zz9_",         // short handle
+		folder+key22+"/folder/",             // handle missing
+		folder+key22+"/file/Zz9_-xY",
+		"https://mega.nz/#!AbCdEfG!"+key43,
+		"https://mega.nz/#F!AbCdEfGh!"+key22+"!Zz9",
+		"https://mega.nz/#F!AbCdEfGh!"+key22[:20],
+	)
+	for _, l := range cut {
+		_, err := parseLink(l)
+		if err == nil || !strings.Contains(err.Error(), "copied in full") {
+			t.Errorf("%q: want a 'copied in full' error, got %v", l, err)
+		}
+	}
+
+	// Right length, wrong characters: a different message.
+	if _, err := parseLink(file + strings.Repeat("A", 42) + "*"); err == nil || strings.Contains(err.Error(), "copied in full") {
+		t.Errorf("bad characters: got %v", err)
+	}
+	// Junk after the key.
+	if _, err := parseLink(folder + key22 + "/bogus/Zz9_-xYw"); err == nil || !strings.Contains(err.Error(), "unrecognised") {
+		t.Errorf("junk after key: got %v", err)
+	}
+}

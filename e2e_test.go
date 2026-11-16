@@ -736,3 +736,83 @@ func TestOverQuotaIsPermanent(t *testing.T) {
 		t.Fatalf("want -17, got %v", err)
 	}
 }
+
+// Any decryption failure stops the link before anything is downloaded.
+func TestDecryptionFailuresHalt(t *testing.T) {
+	expectHalt := func(t *testing.T, m *fakeMega, link, want string) {
+		t.Helper()
+		out := t.TempDir()
+		_, err := m.run(context.Background(), m.config(out), link)
+		if err == nil || !strings.Contains(err.Error(), want) {
+			t.Fatalf("want error containing %q, got %v", want, err)
+		}
+		if m.requests.Load() != 0 || m.linkReqs.Load() != 0 {
+			t.Fatalf("downloading started: %d storage requests, %d link requests", m.requests.Load(), m.linkReqs.Load())
+		}
+		if entries, _ := os.ReadDir(out); len(entries) != 0 {
+			t.Fatalf("wrote to disk: %v", entries)
+		}
+	}
+
+	t.Run("wrong file key", func(t *testing.T) {
+		m := newFakeMega(t)
+		f := m.addFile("FiLe0001", "a.bin", 1000, 30, false)
+		good := f.key
+		f.key = append([]byte{good[0] ^ 1}, good[1:]...) // link carries a wrong key…
+		link := m.fileLink(f)
+		f.key = good // …while MEGA has the file under the right one
+		expectHalt(t, m, link, "link's key is wrong")
+	})
+
+	t.Run("wrong folder key", func(t *testing.T) {
+		m := newFakeMega(t)
+		a := m.addFile("FiLeAaAa", "a.txt", 100, 31, false)
+		m.publishFolder("Share", []*fakeFile{a}, nil)
+		bad := bytes.Repeat([]byte{0x43}, 16)
+		expectHalt(t, m, "https://mega.nz/folder/"+m.folder+"#"+b64enc(bad), "link's key is wrong")
+	})
+
+	t.Run("one undecryptable file", func(t *testing.T) {
+		m := newFakeMega(t)
+		a := m.addFile("FiLeAaAa", "a.txt", 100, 32, false)
+		b := m.addFile("FiLeBbBb", "b.txt", 100, 33, false)
+		link := m.publishFolder("Share", []*fakeFile{a}, []*fakeFile{b})
+		for i := range m.nodes {
+			if m.nodes[i].Handle == "FiLeBbBb" {
+				m.nodes[i].Attr = encryptAttrs(bytes.Repeat([]byte{1}, 16), "b.txt") // wrong key
+			}
+		}
+		expectHalt(t, m, link, "cannot decrypt file FiLeBbBb")
+	})
+
+	t.Run("nameless attributes", func(t *testing.T) {
+		m := newFakeMega(t)
+		a := m.addFile("FiLeAaAa", "", 100, 34, false)
+		link := m.publishFolder("Share", []*fakeFile{a}, nil)
+		expectHalt(t, m, link, "no name")
+	})
+
+	t.Run("no key for this share", func(t *testing.T) {
+		m := newFakeMega(t)
+		a := m.addFile("FiLeAaAa", "a.txt", 100, 35, false)
+		link := m.publishFolder("Share", []*fakeFile{a}, nil)
+		for i := range m.nodes {
+			if m.nodes[i].Handle == "FiLeAaAa" {
+				m.nodes[i].Key = "XxXxXxXx:" + b64enc(bytes.Repeat([]byte{9}, 32))
+			}
+		}
+		expectHalt(t, m, link, "no key for this share")
+	})
+
+	t.Run("malformed node key", func(t *testing.T) {
+		m := newFakeMega(t)
+		a := m.addFile("FiLeAaAa", "a.txt", 100, 36, false)
+		link := m.publishFolder("Share", []*fakeFile{a}, nil)
+		for i := range m.nodes {
+			if m.nodes[i].Handle == "SuBdIr01" {
+				m.nodes[i].Key = "RoOtNoDe:" + b64enc(make([]byte, 20)) // not a whole AES block
+			}
+		}
+		expectHalt(t, m, link, "cannot decrypt folder SuBdIr01")
+	})
+}

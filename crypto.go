@@ -102,7 +102,7 @@ func decryptAttrs(key []byte, encB64 string) (*nodeAttrs, error) {
 	plain := make([]byte, len(enc))
 	cipher.NewCBCDecrypter(block, make([]byte, aes.BlockSize)).CryptBlocks(plain, enc)
 	if !bytes.HasPrefix(plain, []byte("MEGA")) {
-		return nil, errors.New("attributes did not decrypt (wrong key?)")
+		return nil, errors.New("attributes did not decrypt")
 	}
 	plain = bytes.TrimRight(plain[4:], "\x00")
 	var a nodeAttrs

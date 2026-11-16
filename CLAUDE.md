@@ -68,6 +68,15 @@ Tests are hermetic (`e2e_test.go` runs a fake API + storage + proxy with
 - **No nested retries.** Metadata calls (`call`) retry on their own; download-link
   requests (`getLink` → `callOnce`) make one attempt and leave retrying to the
   chunk loop, so a failing link request costs one chunk attempt, not -r × -r.
+- **Links are validated part by part before any request** (`parseLink`): ID and
+  handles must be 8 characters, keys 43 (file) / 22 (folder) characters, checked
+  *before* base64 decoding so every truncation says "copied in full?".
+- **Any decryption failure halts the link before anything is downloaded**
+  (`resolve`/`decryptNode`): bad node key, missing key for the share, bad key
+  length, attributes that don't decrypt or carry no name. The share root (or the
+  file of a file link) is decrypted first so a wrong link key is reported as such.
+  Only the `k` pair under the share root's handle is ever used. (A MAC mismatch
+  after download is verification, not decryption: delete + redownload, as above.)
 - **Paths:** names are sanitised to a single component (no separators, no `..`,
   Windows-reserved names/characters) and duplicate sibling names get ` (2)`.
 - **Piped stdout:** no cursor movement; plain timestamped lines, status every 10s.

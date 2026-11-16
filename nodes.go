@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"path"
@@ -55,7 +56,9 @@ func resolve(ctx context.Context, api *apiClient, l *megaLink) (*tree, error) {
 			return nil, err
 		}
 		n := &node{handle: l.id, size: fi.Size, key: fk}
-		n.origName = decryptName(fk.aes[:], fi.Attr, l.id)
+		if n.origName, err = decryptName(fk.aes[:], fi.Attr); err != nil {
+			return nil, wrongKey(err)
+		}
 		n.name = sanitizeName(n.origName)
 		n.relPath, n.origPath = n.name, n.origName
 		debugf("resolve: file %s %q, %d bytes", l.id, n.origName, n.size)
@@ -87,32 +90,32 @@ func resolve(ctx context.Context, api *apiClient, l *megaLink) (*tree, error) {
 		return nil, fmt.Errorf("cannot find the root of the folder listing")
 	}
 
+	// Any decryption failure stops here, before anything is downloaded. The share
+	// root goes first: if the master key can't decrypt it, the link's key is wrong,
+	// which deserves a clearer message than whichever node happened to fail first.
 	nodes := make(map[string]*node, len(raw))
-	var order []*node
 	for _, r := range raw {
-		if r.Type != 0 && r.Type != 1 {
-			continue // trash/inbox/etc. never appear in public shares, but be safe
-		}
-		n := &node{handle: r.Handle, isDir: r.Type == 1, size: r.Size}
-		key, err := nodeKey(l.key, r.Key, shareRoot)
-		if err != nil {
-			warnf("%s: %v — skipping", r.Handle, err)
-			continue
-		}
-		attrKey := key
-		if !n.isDir {
-			if n.key, err = unpackFileKey(key); err != nil {
-				warnf("%s: %v — skipping", r.Handle, err)
-				continue
+		if r.Handle == shareRoot {
+			n, err := decryptNode(l.key, r, shareRoot)
+			if err != nil {
+				return nil, wrongKey(err)
 			}
-			attrKey = n.key.aes[:]
-		} else if len(key) != 16 {
-			warnf("%s: folder key has bad length — skipping", r.Handle)
-			continue
+			nodes[r.Handle] = n
 		}
-		n.origName = decryptName(attrKey, r.Attr, r.Handle)
+	}
+	for _, r := range raw {
+		if r.Handle == shareRoot || (r.Type != 0 && r.Type != 1) {
+			continue // other types never appear in public shares, but be safe
+		}
+		n, err := decryptNode(l.key, r, shareRoot)
+		if err != nil {
+			kind := "file"
+			if r.Type == 1 {
+				kind = "folder"
+			}
+			return nil, fmt.Errorf("cannot decrypt %s %s: %w — stopping", kind, r.Handle, err)
+		}
 		nodes[r.Handle] = n
-		order = append(order, n)
 	}
 	for _, r := range raw {
 		n := nodes[r.Handle]
@@ -146,49 +149,66 @@ func resolve(ctx context.Context, api *apiClient, l *megaLink) (*tree, error) {
 	return t, nil
 }
 
-// nodeKey finds and decrypts a node's key. "k" holds one or more "handle:key" pairs
-// separated by "/"; the one under the share root's handle is encrypted with the
-// link's master key. Other pairs belong to other shares and cannot be used, but are
-// tried as a fallback in case MEGA changes the arrangement again.
-func nodeKey(master []byte, k, shareRoot string) ([]byte, error) {
-	var fallback []string
-	for _, pair := range strings.Split(k, "/") {
-		h, enc, ok := strings.Cut(pair, ":")
-		if !ok {
-			continue
-		}
-		if h == shareRoot {
-			fallback = append([]string{enc}, fallback...)
-		} else {
-			fallback = append(fallback, enc)
-		}
-	}
-	var lastErr error = fmt.Errorf("no usable key in %q", k)
-	for _, enc := range fallback {
-		raw, err := b64dec(enc)
-		if err != nil {
-			lastErr = err
-			continue
-		}
-		key, err := decryptNodeKey(master, raw)
-		if err != nil {
-			lastErr = err
-			continue
-		}
-		return key, nil
-	}
-	return nil, lastErr
+// wrongKey reports that the link's own key could not decrypt what it points at.
+func wrongKey(err error) error {
+	return fmt.Errorf("the link's key is wrong (%v) — was the link copied correctly?", err)
 }
 
-// decryptName returns a node's name, falling back to its handle when the attributes
-// cannot be decrypted, so one bad entry does not sink the whole folder.
-func decryptName(key []byte, attr, handle string) string {
-	a, err := decryptAttrs(key, attr)
-	if err != nil || a.Name == "" {
-		warnf("%s: cannot decrypt name (%v); using the handle instead", handle, err)
-		return handle
+// decryptNode unwraps a listed node's key and decrypts its name. Any failure is an
+// error: a node that can't be decrypted can't be downloaded or even named.
+func decryptNode(master []byte, r rawNode, shareRoot string) (*node, error) {
+	n := &node{handle: r.Handle, isDir: r.Type == 1, size: r.Size}
+	key, err := nodeKey(master, r.Key, shareRoot)
+	if err != nil {
+		return nil, err
 	}
-	return a.Name
+	attrKey := key
+	if n.isDir {
+		if len(key) != 16 {
+			return nil, fmt.Errorf("folder key is %d bytes, expected 16", len(key))
+		}
+	} else {
+		if n.key, err = unpackFileKey(key); err != nil {
+			return nil, err
+		}
+		attrKey = n.key.aes[:]
+	}
+	if n.origName, err = decryptName(attrKey, r.Attr); err != nil {
+		return nil, err
+	}
+	return n, nil
+}
+
+// nodeKey finds and decrypts a node's key. "k" holds one or more "handle:key" pairs
+// separated by "/"; only the one under the share root's handle is encrypted with
+// the link's master key. The others belong to other shares and can't be decrypted
+// with it (AES-ECB would "succeed" and produce garbage), so they are never tried.
+func nodeKey(master []byte, k, shareRoot string) ([]byte, error) {
+	for _, pair := range strings.Split(k, "/") {
+		h, enc, ok := strings.Cut(pair, ":")
+		if !ok || h != shareRoot {
+			continue
+		}
+		raw, err := b64dec(enc)
+		if err != nil {
+			return nil, fmt.Errorf("node key is not valid base64: %w", err)
+		}
+		return decryptNodeKey(master, raw)
+	}
+	return nil, fmt.Errorf("no key for this share (%s) among %d key(s)", shareRoot, strings.Count(k, ":"))
+}
+
+// decryptName decrypts a node's attributes and returns its name. Attributes that
+// don't decrypt, aren't valid JSON, or carry no name are all errors.
+func decryptName(key []byte, attr string) (string, error) {
+	a, err := decryptAttrs(key, attr)
+	if err != nil {
+		return "", err
+	}
+	if a.Name == "" {
+		return "", errors.New("attributes decrypted but contain no name")
+	}
+	return a.Name, nil
 }
 
 // finishTree sorts children, de-duplicates sibling names, fills in paths, and
