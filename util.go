@@ -1,0 +1,198 @@
+package main
+
+import (
+	"context"
+	"fmt"
+	"strconv"
+	"strings"
+	"sync"
+	"time"
+)
+
+// rateLimiter is a token bucket shared by every worker, so --limit-rate caps the
+// combined transfer rather than each download individually. A nil limiter is
+// unlimited, which keeps the hot path free of branches at the call site.
+type rateLimiter struct {
+	mu     sync.Mutex
+	rate   float64 // bytes per second
+	burst  float64 // maximum tokens held, so short pauses can be spent later
+	tokens float64
+	last   time.Time
+}
+
+// newRateLimiter returns nil (meaning unlimited) when rate is zero or negative.
+func newRateLimiter(bytesPerSec int64) *rateLimiter {
+	if bytesPerSec <= 0 {
+		return nil
+	}
+	burst := float64(bytesPerSec) // one second of slack
+	return &rateLimiter{
+		rate:   float64(bytesPerSec),
+		burst:  burst,
+		tokens: burst,
+		last:   time.Now(),
+	}
+}
+
+// wait blocks until n bytes' worth of budget is available, or the context ends.
+func (r *rateLimiter) wait(ctx context.Context, n int) error {
+	if r == nil {
+		return nil
+	}
+	for {
+		r.mu.Lock()
+		now := time.Now()
+		// Refill for the time elapsed since the last request.
+		r.tokens += now.Sub(r.last).Seconds() * r.rate
+		r.last = now
+		if r.tokens > r.burst {
+			r.tokens = r.burst
+		}
+		need := float64(n)
+		if need > r.burst {
+			need = r.burst // never ask for more than the bucket can ever hold
+		}
+		if r.tokens >= need {
+			r.tokens -= need
+			r.mu.Unlock()
+			return nil
+		}
+		// Sleep exactly long enough for the shortfall to accrue.
+		deficit := need - r.tokens
+		delay := time.Duration(deficit / r.rate * float64(time.Second))
+		r.mu.Unlock()
+
+		if delay < time.Millisecond {
+			delay = time.Millisecond
+		}
+		select {
+		case <-time.After(delay):
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+}
+
+// bar renders a proportional progress bar; an unknown total shows as empty.
+func bar(done, total int64) string {
+	filled := 0
+	if total > 0 {
+		filled = int(float64(done) / float64(total) * barWidth)
+		if filled > barWidth {
+			filled = barWidth
+		}
+		if filled < 0 {
+			filled = 0
+		}
+	}
+	return strings.Repeat("█", filled) + strings.Repeat("░", barWidth-filled)
+}
+
+// pct returns a 0-100 completion percentage, guarding against an unknown total.
+func pct(done, total int64) int {
+	if total <= 0 {
+		return 0
+	}
+	v := int(float64(done) / float64(total) * 100)
+	if v > 100 {
+		v = 100
+	}
+	return v
+}
+
+// formatBytes prints a binary (IEC) size: KiB/MiB/GiB are powers of 1024, matching
+// what ls -h, du -h and the file manager report for the same file.
+func formatBytes(n int64) string {
+	const unit = 1024
+	if n < unit {
+		return fmt.Sprintf("%d B", n)
+	}
+	div, exp := int64(unit), 0
+	for v := n / unit; v >= unit && exp < 4; v /= unit {
+		div *= unit
+		exp++
+	}
+	return fmt.Sprintf("%.1f %ciB", float64(n)/float64(div), "KMGTP"[exp])
+}
+
+// formatSpeed prints a transfer rate, or a placeholder before any bytes have moved.
+func formatSpeed(bps float64) string {
+	if bps <= 0 {
+		return "-- MiB/s"
+	}
+	return formatBytes(int64(bps)) + "/s"
+}
+
+// etaSeconds is how long the remaining bytes take at the given rate, or 0 when there is
+// nothing to go on yet.
+func etaSeconds(remaining, bps float64) float64 {
+	if bps <= 0 || remaining <= 0 {
+		return 0
+	}
+	return remaining / bps
+}
+
+// formatETA converts remaining bytes and current speed into a countdown.
+func formatETA(remaining, bps float64) string {
+	secs := etaSeconds(remaining, bps)
+	if secs <= 0 {
+		return "--:--"
+	}
+	return formatDuration(time.Duration(secs * float64(time.Second)))
+}
+
+// formatDuration prints m:ss, or h:mm:ss once the span passes an hour.
+func formatDuration(d time.Duration) string {
+	if d < 0 {
+		d = 0
+	}
+	total := int(d.Seconds())
+	h, m, s := total/3600, total/60%60, total%60
+	if h > 0 {
+		return fmt.Sprintf("%d:%02d:%02d", h, m, s)
+	}
+	return fmt.Sprintf("%d:%02d", m, s)
+}
+
+// truncate clips a string to n display cells, marking the cut with an ellipsis.
+// It counts runes so multi-byte filenames are not split mid-character.
+func truncate(s string, n int) string {
+	if n <= 0 {
+		return ""
+	}
+	r := []rune(s)
+	if len(r) <= n {
+		return s
+	}
+	if n == 1 {
+		return "…"
+	}
+	return string(r[:n-1]) + "…"
+}
+
+// parseSize reads a byte count like "256M", "1.5G", "512K" or a plain number.
+// Suffixes are binary: 1K = 1024 bytes. An optional trailing "B" or "iB" is allowed.
+func parseSize(s string) (int64, error) {
+	orig := s
+	s = strings.TrimSpace(s)
+	u := strings.ToUpper(s)
+	u = strings.TrimSuffix(strings.TrimSuffix(u, "B"), "I")
+	mult := float64(1)
+	if u != "" {
+		switch u[len(u)-1] {
+		case 'K':
+			mult, u = 1<<10, u[:len(u)-1]
+		case 'M':
+			mult, u = 1<<20, u[:len(u)-1]
+		case 'G':
+			mult, u = 1<<30, u[:len(u)-1]
+		case 'T':
+			mult, u = 1<<40, u[:len(u)-1]
+		}
+	}
+	v, err := strconv.ParseFloat(strings.TrimSpace(u), 64)
+	if err != nil || v <= 0 {
+		return 0, fmt.Errorf("cannot parse size %q (try 256M, 1G, 512K, or a byte count)", orig)
+	}
+	return int64(v * mult), nil
+}
