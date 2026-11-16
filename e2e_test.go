@@ -45,6 +45,28 @@ type fakeMega struct {
 	proxied    atomic.Int64
 	onServe    func(total int64) // called as bytes go out (to simulate Ctrl+C)
 	slowPerBuf time.Duration
+
+	linkErrs   []int // API error codes to answer download-link requests with, in order
+	metaErrs   []int // likewise for metadata requests (g without a link, and f)
+	linkReqs   atomic.Int64
+	apiRetries int // the client's retry budget for metadata calls
+}
+
+func TestMain(m *testing.M) {
+	apiThrottleWait = 20 * time.Millisecond // keep throttle tests fast
+	os.Exit(m.Run())
+}
+
+// popErr takes the next queued API error, if any.
+func (m *fakeMega) popErr(q *[]int) (int, bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if len(*q) == 0 {
+		return 0, false
+	}
+	code := (*q)[0]
+	*q = (*q)[1:]
+	return code, true
 }
 
 type fakeFile struct {
@@ -56,7 +78,7 @@ type fakeFile struct {
 }
 
 func newFakeMega(t *testing.T) *fakeMega {
-	m := &fakeMega{t: t, files: map[string]*fakeFile{}}
+	m := &fakeMega{t: t, files: map[string]*fakeFile{}, apiRetries: 3}
 	m.api = httptest.NewServer(http.HandlerFunc(m.serveAPI))
 	m.storage = httptest.NewServer(http.HandlerFunc(m.serveStorage))
 	m.proxy = httptest.NewServer(http.HandlerFunc(m.serveProxy))
@@ -138,6 +160,15 @@ func (m *fakeMega) serveAPI(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	cmd := cmds[0]
+	queue := &m.metaErrs
+	if cmd["g"] != nil {
+		m.linkReqs.Add(1)
+		queue = &m.linkErrs
+	}
+	if code, ok := m.popErr(queue); ok {
+		fmt.Fprintf(w, "[%d]", code)
+		return
+	}
 	switch cmd["a"] {
 	case "g":
 		h, _ := cmd["p"].(string)
@@ -278,7 +309,7 @@ func (m *fakeMega) config(out string) *config {
 }
 
 func (m *fakeMega) apiClient() *apiClient {
-	c := newAPIClient(newAPIHTTPClient(), 3)
+	c := newAPIClient(newAPIHTTPClient(), m.apiRetries)
 	c.endpoint = m.api.URL + "/cs"
 	return c
 }
@@ -640,8 +671,68 @@ func TestAPIErrors(t *testing.T) {
 	if err := decodeAPIResult([]byte(`[{"s":5,"at":"x","g":"http://h/dl/t"}]`), &out); err != nil || out.Size != 5 {
 		t.Fatalf("decode: %+v %v", out, err)
 	}
-	if !apiError(-9).permanent() || apiError(-3).permanent() {
+	if !apiError(-9).permanent() || !apiError(-17).permanent() || apiError(-3).permanent() || apiError(-4).permanent() {
 		t.Fatal("permanence")
 	}
+	if !apiError(-4).throttled() || !apiError(-6).throttled() || apiError(-3).throttled() {
+		t.Fatal("throttling")
+	}
 	_ = fmt.Sprint(apiError(-3))
+}
+
+// A failed link request inside a chunk is one chunk attempt, not a nested API retry
+// loop: with -r 2, a chunk whose link requests always fail makes exactly 2 of them.
+func TestChunkLinkFailuresDontMultiply(t *testing.T) {
+	m := newFakeMega(t)
+	f := m.addFile("FiLe0001", "x.bin", 100*1024, 20, false)
+	m.linkErrs = []int{-3, -3, -3, -3, -3, -3, -3, -3}
+	cfg := m.config(t.TempDir())
+	cfg.retries = 2
+	st, err := m.run(context.Background(), cfg, m.fileLink(f))
+	if err == nil || st.failed != 1 {
+		t.Fatalf("expected failure, got %+v %v", st, err)
+	}
+	if got := m.linkReqs.Load(); got != 2 {
+		t.Fatalf("%d link requests, want 2", got)
+	}
+}
+
+// API throttling (-4/-6) is waited out without spending retries, both for metadata
+// and for download links, even with a budget of a single attempt.
+func TestAPIThrottlingIsFree(t *testing.T) {
+	m := newFakeMega(t)
+	f := m.addFile("FiLe0001", "t.bin", 2<<20, 21, false)
+	m.apiRetries = 1
+	m.metaErrs = []int{-4, -6, -4}
+	m.linkErrs = []int{-6, -4, -6, -4}
+	out := t.TempDir()
+	cfg := m.config(out)
+	cfg.retries = 1
+	if _, err := m.run(context.Background(), cfg, m.fileLink(f)); err != nil {
+		t.Fatal(err)
+	}
+	mustEqualFile(t, filepath.Join(out, "t.bin"), f.plain)
+}
+
+// -17 (over quota) is permanent: no retries, the file fails at once.
+func TestOverQuotaIsPermanent(t *testing.T) {
+	m := newFakeMega(t)
+	f := m.addFile("FiLe0001", "q.bin", 100*1024, 22, false)
+	m.linkErrs = []int{-17, -17, -17, -17, -17}
+	cfg := m.config(t.TempDir())
+	st, err := m.run(context.Background(), cfg, m.fileLink(f))
+	if err == nil || st.failed != 1 {
+		t.Fatalf("expected failure, got %+v %v", st, err)
+	}
+	if got := m.linkReqs.Load(); got != 1 {
+		t.Fatalf("%d link requests, want 1", got)
+	}
+
+	// And while resolving a link, too.
+	m2 := newFakeMega(t)
+	f2 := m2.addFile("FiLe0002", "q.bin", 100, 23, false)
+	m2.metaErrs = []int{-17, -17, -17}
+	if _, err := m2.run(context.Background(), m2.config(t.TempDir()), m2.fileLink(f2)); !errors.Is(err, apiError(-17)) {
+		t.Fatalf("want -17, got %v", err)
+	}
 }

@@ -50,7 +50,7 @@ func totalSize(files []*node) int64 {
 func resolve(ctx context.Context, api *apiClient, l *megaLink) (*tree, error) {
 	if l.kind == kindFile {
 		fk, _ := unpackFileKey(l.key)
-		fi, err := api.getFile(ctx, "", l.id, false)
+		fi, err := api.getFile(ctx, "", l.id)
 		if err != nil {
 			return nil, err
 		}

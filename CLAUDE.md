@@ -60,9 +60,14 @@ Tests are hermetic (`e2e_test.go` runs a fake API + storage + proxy with
   `-r` (3 when `-r 0`).
 - **Parallel `.part` files are preallocated; sequential ones never are.** Resuming a
   parallel partial with `--sequential` is refused up front (`checkModes`).
-- **Retries:** per chunk, counter reset after ≥ 8 MiB of progress; 429/503/509 are
-  waited out without spending a retry (up to 20); permanent API errors (-9, -11,
-  -16…) and local disk errors fail immediately; stalls (60s silent) are retried.
+- **Retries:** per chunk, counter reset after ≥ 8 MiB of progress; stalls (60s
+  silent) are retried. Throttling — HTTP 429/503/509 and API -4/-6 — is waited out
+  without spending a retry (up to 20; API throttles wait 5s, 10s, … up to 30s).
+  Permanent API errors (-2, -8, -9, -11, -14, -16, -17) and local disk errors fail
+  immediately.
+- **No nested retries.** Metadata calls (`call`) retry on their own; download-link
+  requests (`getLink` → `callOnce`) make one attempt and leave retrying to the
+  chunk loop, so a failing link request costs one chunk attempt, not -r × -r.
 - **Paths:** names are sanitised to a single component (no separators, no `..`,
   Windows-reserved names/characters) and duplicate sibling names get ` (2)`.
 - **Piped stdout:** no cursor movement; plain timestamped lines, status every 10s.

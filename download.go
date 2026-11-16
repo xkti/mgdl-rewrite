@@ -50,14 +50,15 @@ type localError struct{ err error }
 func (e *localError) Error() string { return e.err.Error() }
 func (e *localError) Unwrap() error { return e.err }
 
-// throttleError is an upstream asking us to slow down rather than a failure.
+// throttleError is an upstream (storage, proxy or the API) asking us to slow down
+// rather than a failure.
 type throttleError struct {
-	status int
-	after  time.Duration
+	what  string // "HTTP 509", "MEGA API error -4"
+	after time.Duration
 }
 
 func (e *throttleError) Error() string {
-	return fmt.Sprintf("HTTP %d (rate limited), waiting %s", e.status, e.after)
+	return fmt.Sprintf("%s (rate limited), waiting %s", e.what, e.after)
 }
 
 func isThrottle(status int) bool {
@@ -403,6 +404,11 @@ func (j *job) fetchChunk(ctx context.Context, ci int) error {
 		e.ctl.update(func() { after = c.Done })
 
 		var te *throttleError
+		if errors.As(err, &ae) && ae.throttled() {
+			// The link request was throttled: wait longer each time, like call does.
+			te = &throttleError{what: fmt.Sprintf("MEGA API error %d", int(ae)), after: throttleDelay(throttled + 1)}
+			err = te
+		}
 		if errors.As(err, &te) && throttled < maxThrottleWaits {
 			throttled++
 			debugf("%s: %v", label, err)
@@ -443,7 +449,7 @@ func (j *job) attemptChunk(ctx context.Context, ci int, label string) error {
 	off := c.Start + done
 
 	// Download URLs are short-lived: a fresh one for every attempt.
-	fi, err := e.api.getFile(ctx, e.tree.folder, n.handle, true)
+	fi, err := e.api.getLink(ctx, e.tree.folder, n.handle)
 	if err != nil {
 		return err
 	}
@@ -473,7 +479,7 @@ func (j *job) attemptChunk(ctx context.Context, ci int, label string) error {
 			return fmt.Errorf("%s: server offered %d bytes, expected %d", hostOr(proxy, "storage"), resp.ContentLength, want)
 		}
 	case isThrottle(resp.StatusCode):
-		return &throttleError{status: resp.StatusCode, after: retryAfter(resp, 20*time.Second)}
+		return &throttleError{what: "HTTP " + strconv.Itoa(resp.StatusCode), after: retryAfter(resp, 20*time.Second)}
 	default:
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 200))
 		return fmt.Errorf("%s: HTTP %s %s", hostOr(proxy, "storage"), resp.Status, strings.TrimSpace(string(body)))

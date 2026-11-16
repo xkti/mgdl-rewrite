@@ -40,17 +40,36 @@ var apiErrorText = map[int]string{
 	-11: "access denied",
 	-14: "decryption failed",
 	-16: "blocked — taken down or the account was suspended",
-	-17: "over quota",
+	-17: "over quota — the owner's account has exceeded its storage quota",
 	-18: "temporarily unavailable",
 }
 
-// permanent reports whether retrying the same request can never succeed.
+// permanent reports whether retrying the same request can't succeed (soon enough
+// to be worth waiting for: -17 means the owner's account is over quota).
 func (e apiError) permanent() bool {
 	switch int(e) {
-	case -2, -8, -9, -11, -14, -16:
+	case -2, -8, -9, -11, -14, -16, -17:
 		return true
 	}
 	return false
+}
+
+// throttled reports whether the API is asking us to slow down. Like HTTP 429/503/509
+// from storage, these are waited out without spending a retry.
+func (e apiError) throttled() bool {
+	return e == -4 || e == -6
+}
+
+// apiThrottleWait is the base pause after the API says we are going too fast; each
+// consecutive throttle waits one step longer, up to apiThrottleMax. A variable so
+// tests can shrink it.
+var apiThrottleWait = 5 * time.Second
+
+const apiThrottleMax = 30 * time.Second
+
+// throttleDelay is the pause before retrying after the nth consecutive throttle.
+func throttleDelay(n int) time.Duration {
+	return min(time.Duration(n)*apiThrottleWait, apiThrottleMax)
 }
 
 // apiClient issues MEGA API commands.
@@ -69,18 +88,15 @@ func newAPIClient(hc *http.Client, retries int) *apiClient {
 
 // call sends one command (as a single-element batch) and decodes the single result
 // into out. folder, if non-empty, is the public folder handle the command runs in.
-// Transient failures (-3/-4/-6/-18, HTTP 5xx, network errors) are retried with backoff.
+//
+// Permanent errors return at once. Throttling (-4/-6) is waited out without spending
+// a retry, up to maxThrottleWaits times. Anything else transient (-3, -18, HTTP 5xx,
+// network errors) is retried with backoff, up to c.retries attempts (0 = forever).
 func (c *apiClient) call(ctx context.Context, folder string, cmd any, out any) error {
-	body, err := json.Marshal([]any{cmd})
-	if err != nil {
-		return err
-	}
 	var lastErr error
-	for attempt := 1; c.retries == 0 || attempt <= c.retries; attempt++ {
-		raw, err := c.post(ctx, folder, body)
-		if err == nil {
-			err = decodeAPIResult(raw, out)
-		}
+	throttles := 0
+	for attempt := 1; c.retries == 0 || attempt <= c.retries; {
+		err := c.callOnce(ctx, folder, cmd, out)
 		if err == nil {
 			return nil
 		}
@@ -92,18 +108,36 @@ func (c *apiClient) call(ctx context.Context, folder string, cmd any, out any) e
 			return err
 		}
 		lastErr = err
-		wait := time.Duration(attempt*attempt) * 500 * time.Millisecond
-		if wait > 10*time.Second {
-			wait = 10 * time.Second
+
+		var wait time.Duration
+		if errors.As(err, &ae) && ae.throttled() && throttles < maxThrottleWaits {
+			throttles++
+			wait = throttleDelay(throttles)
+			debugf("api: %v; waiting %s (throttled %d/%d, not counted as a retry)", err, wait, throttles, maxThrottleWaits)
+		} else {
+			wait = min(time.Duration(attempt*attempt)*500*time.Millisecond, 10*time.Second)
+			debugf("api: %v; retrying in %s (attempt %d)", err, wait, attempt)
+			attempt++
 		}
-		debugf("api: %v; retrying in %s (attempt %d)", err, wait, attempt)
-		select {
-		case <-time.After(wait):
-		case <-ctx.Done():
+		if !sleepCtx(ctx, wait) {
 			return ctx.Err()
 		}
 	}
 	return lastErr
+}
+
+// callOnce makes a single attempt with no retries, for callers that run their own
+// retry loop (the chunk downloader), so retries don't multiply.
+func (c *apiClient) callOnce(ctx context.Context, folder string, cmd any, out any) error {
+	body, err := json.Marshal([]any{cmd})
+	if err != nil {
+		return err
+	}
+	raw, err := c.post(ctx, folder, body)
+	if err != nil {
+		return err
+	}
+	return decodeAPIResult(raw, out)
 }
 
 func (c *apiClient) post(ctx context.Context, folder string, body []byte) ([]byte, error) {
@@ -173,11 +207,10 @@ type fileInfo struct {
 	URL  string `json:"g"`
 }
 
-// getFile asks for a file's size, attributes and a fresh download URL. For a file
-// inside a folder share, folder is the share handle and handle the node handle;
-// for a public file link, folder is "" and handle is the link handle. Download
-// URLs are short-lived: request a new one for every chunk and every retry.
-func (c *apiClient) getFile(ctx context.Context, folder, handle string, wantURL bool) (*fileInfo, error) {
+// getCmd builds an "a":"g" command. For a file inside a folder share, folder is
+// the share handle and handle the node handle; for a public file link, folder is ""
+// and handle is the link handle.
+func getCmd(folder, handle string, wantURL bool) map[string]any {
 	cmd := map[string]any{"a": "g"}
 	if folder == "" {
 		cmd["p"] = handle
@@ -187,11 +220,27 @@ func (c *apiClient) getFile(ctx context.Context, folder, handle string, wantURL 
 	if wantURL {
 		cmd["g"] = 1
 	}
+	return cmd
+}
+
+// getFile asks for a file's size and attributes, retrying as call does.
+func (c *apiClient) getFile(ctx context.Context, folder, handle string) (*fileInfo, error) {
 	var fi fileInfo
-	if err := c.call(ctx, folder, cmd, &fi); err != nil {
+	if err := c.call(ctx, folder, getCmd(folder, handle, false), &fi); err != nil {
 		return nil, err
 	}
-	if wantURL && fi.URL == "" {
+	return &fi, nil
+}
+
+// getLink asks once for a fresh download URL. Download URLs are short-lived: request
+// a new one for every chunk attempt. There are no retries here; the chunk's own retry
+// loop decides what to do with a failure.
+func (c *apiClient) getLink(ctx context.Context, folder, handle string) (*fileInfo, error) {
+	var fi fileInfo
+	if err := c.callOnce(ctx, folder, getCmd(folder, handle, true), &fi); err != nil {
+		return nil, err
+	}
+	if fi.URL == "" {
 		return nil, errors.New("api returned no download URL")
 	}
 	return &fi, nil
