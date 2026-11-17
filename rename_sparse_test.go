@@ -35,6 +35,45 @@ func TestSanitizeReasons(t *testing.T) {
 	}
 }
 
+func TestWithHandle(t *testing.T) {
+	for _, c := range []struct {
+		name  string
+		isDir bool
+		want  string
+	}{
+		{"x.txt", false, "x_H4nDlE01.txt"},
+		{"archive.tar.gz", false, "archive.tar_H4nDlE01.gz"},
+		{"noext", false, "noext_H4nDlE01"},
+		{".bashrc", false, ".bashrc_H4nDlE01"},
+		{"Season 1.v2", true, "Season 1.v2_H4nDlE01"}, // folders: no extension split
+	} {
+		if got := withHandle(c.name, "H4nDlE01", c.isDir); got != c.want {
+			t.Errorf("withHandle(%q, dir=%v) = %q, want %q", c.name, c.isDir, got, c.want)
+		}
+	}
+}
+
+// A generated name is itself taken: an item that really has that name is
+// renamed instead of colliding with it.
+func TestDuplicateNamesNeverCollide(t *testing.T) {
+	root := &node{isDir: true}
+	for _, c := range []struct{ h, name string }{
+		{"AaAaAaAa", "x.txt"}, {"BbBbBbBb", "x.txt"}, {"CcCcCcCc", "x_BbBbBbBb.txt"},
+	} {
+		n := &node{handle: c.h, origName: c.name, parent: root}
+		root.children = append(root.children, n)
+	}
+	var files []*node
+	finishTree(root, &files)
+	seen := map[string]bool{}
+	for _, f := range files {
+		if seen[strings.ToLower(f.name)] {
+			t.Fatalf("collision on %q: %v", f.name, files)
+		}
+		seen[strings.ToLower(f.name)] = true
+	}
+}
+
 func TestRenameNotes(t *testing.T) {
 	m := newFakeMega(t)
 	a := m.addFile("FiLeAaAa", "x.txt", 10, 50, false)
@@ -50,8 +89,8 @@ func TestRenameNotes(t *testing.T) {
 	}
 	all := strings.Join(renameNotes(tr, tr.files), "\n")
 	for _, want := range []string{
-		"x.txt → x (2).txt  (another item in this folder has the same name)",
-		"X.TXT → X (3).TXT  (another item in this folder has the same name, ignoring case)",
+		"x.txt → x_FiLeBbBb.txt  (another item in this folder has the same name)",
+		"X.TXT → X_FiLeCcCc.TXT  (another item in this folder has the same name, ignoring case)",
 		"sub/a/b.txt → a_b.txt  (contains a path separator)",
 	} {
 		if !strings.Contains(all, want) {

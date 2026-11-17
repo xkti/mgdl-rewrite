@@ -227,26 +227,24 @@ func finishTree(dir *node, files *[]*node) {
 	})
 	// MEGA allows siblings with identical names; the filesystem does not (and on
 	// Windows/macOS, names differing only in case collide too).
-	seen := map[string]int{}
-	firstOrig := map[string]string{}
+	// The first item (in sort order) keeps the name; later ones get "_HANDLE"
+	// before the extension. Generated names count as taken too, so a later item
+	// that happens to be called that is renamed rather than colliding.
+	taken := map[string]string{} // lower-cased name → original name that claimed it
 	for _, c := range dir.children {
 		name, why := sanitize(c.origName)
-		k := strings.ToLower(name)
-		if n := seen[k]; n > 0 {
-			ext := ""
-			if !c.isDir {
-				ext = path.Ext(name)
+		if first, dup := taken[strings.ToLower(name)]; dup {
+			msg := "another item in this folder has the same name"
+			if first != c.origName {
+				msg = "another item in this folder has the same name, ignoring case"
 			}
-			name = fmt.Sprintf("%s (%d)%s", strings.TrimSuffix(name, ext), n+1, ext)
-			dup := "another item in this folder has the same name"
-			if firstOrig[k] != c.origName {
-				dup = "another item in this folder has the same name, ignoring case"
+			why = joinReasons(why, msg)
+			for dup {
+				name = withHandle(name, c.handle, c.isDir)
+				_, dup = taken[strings.ToLower(name)]
 			}
-			why = joinReasons(why, dup)
-		} else {
-			firstOrig[k] = c.origName
 		}
-		seen[k]++
+		taken[strings.ToLower(name)] = c.origName
 		c.name, c.renamed = name, why
 		c.relPath = joinRel(dir.relPath, c.name)
 		c.origPath = joinRel(dir.origPath, c.origName)
@@ -256,6 +254,19 @@ func finishTree(dir *node, files *[]*node) {
 			*files = append(*files, c)
 		}
 	}
+}
+
+// withHandle tags a name with a node handle to make it unique: "x.txt" becomes
+// "x_HANDLE.txt", a folder "sub" becomes "sub_HANDLE", and a dotfile ".bashrc"
+// becomes ".bashrc_HANDLE".
+func withHandle(name, handle string, isDir bool) string {
+	ext := ""
+	if !isDir {
+		if ext = path.Ext(name); ext == name {
+			ext = ""
+		}
+	}
+	return strings.TrimSuffix(name, ext) + "_" + handle + ext
 }
 
 func joinRel(dir, name string) string {

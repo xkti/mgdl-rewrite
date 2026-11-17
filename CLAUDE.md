@@ -91,7 +91,9 @@ Tests are hermetic (`e2e_test.go` runs a fake API + storage + proxy with
   Only the `k` pair under the share root's handle is ever used. (A MAC mismatch
   after download is verification, not decryption: delete + redownload, as above.)
 - **Paths:** names are sanitised to a single component (no separators, no `..`,
-  Windows-reserved names/characters) and duplicate sibling names get ` (2)`.
+  Windows-reserved names/characters). Duplicate sibling names (case-insensitive)
+  get `_HANDLE` before the extension (`withHandle`); the first in sort order keeps
+  its name, and generated names count as taken so nothing can collide.
   `sanitize` returns the reason; every rename among the selected files (all files
   with `--list`) is reported on **stderr** via `noticef`, never stdout.
 - **Piped stdout:** no cursor movement; plain timestamped lines, status every 10s.

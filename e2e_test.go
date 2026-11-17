@@ -552,7 +552,7 @@ func TestFolderDownloadPathsAndSkip(t *testing.T) {
 		t.Fatalf("stats %+v", st)
 	}
 	mustEqualFile(t, filepath.Join(out, "My Share", "a.txt"), a.plain)
-	mustEqualFile(t, filepath.Join(out, "My Share", "a (2).txt"), d.plain)
+	mustEqualFile(t, filepath.Join(out, "My Share", "a_FiLeDdDd.txt"), d.plain)
 	mustEqualFile(t, filepath.Join(out, "My Share", "sub", "c.bin"), c.plain)
 	if fileExists(filepath.Join(out, "My Share", ".mgdl-"+m.folder)) {
 		t.Fatal("control file left after completion")
