@@ -73,19 +73,14 @@ func (r *rateLimiter) wait(ctx context.Context, n int) error {
 	}
 }
 
-// bar renders a proportional progress bar; an unknown total shows as empty.
-func bar(done, total int64) string {
+// bar renders a proportional progress bar width columns wide; an unknown total
+// shows as empty.
+func bar(done, total int64, width int) string {
 	filled := 0
 	if total > 0 {
-		filled = int(float64(done) / float64(total) * barWidth)
-		if filled > barWidth {
-			filled = barWidth
-		}
-		if filled < 0 {
-			filled = 0
-		}
+		filled = min(width, max(0, int(float64(done)/float64(total)*float64(width))))
 	}
-	return strings.Repeat("█", filled) + strings.Repeat("░", barWidth-filled)
+	return strings.Repeat("█", filled) + strings.Repeat("░", width-filled)
 }
 
 // pct returns a 0-100 completion percentage, guarding against an unknown total.
@@ -152,22 +147,6 @@ func formatDuration(d time.Duration) string {
 		return fmt.Sprintf("%d:%02d:%02d", h, m, s)
 	}
 	return fmt.Sprintf("%d:%02d", m, s)
-}
-
-// truncate clips a string to n display cells, marking the cut with an ellipsis.
-// It counts runes so multi-byte filenames are not split mid-character.
-func truncate(s string, n int) string {
-	if n <= 0 {
-		return ""
-	}
-	r := []rune(s)
-	if len(r) <= n {
-		return s
-	}
-	if n == 1 {
-		return "…"
-	}
-	return string(r[:n-1]) + "…"
 }
 
 // parseSize reads a byte count like "256M", "1.5G", "512K" or a plain number.

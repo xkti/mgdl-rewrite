@@ -58,17 +58,41 @@ func runSelector(t *tree, preselected []*node) ([]*node, error) {
 		term.Restore(fd, old)
 	}()
 
-	buf := make([]byte, 64)
+	// Keys are read in the background so a resize can redraw without waiting for
+	// one. The reader is left blocked in Read when we return; the terminal is
+	// restored either way, and the process carries on without it.
+	type read struct {
+		b   []byte
+		err error
+	}
+	keys := make(chan read)
+	go func() {
+		for {
+			buf := make([]byte, 64)
+			n, err := os.Stdin.Read(buf)
+			keys <- read{buf[:n], err}
+			if err != nil {
+				return
+			}
+		}
+	}()
+	resized, stopResize := watchResize()
+	defer stopResize()
+
 	for {
 		s.draw()
-		n, err := os.Stdin.Read(buf)
-		if err != nil {
-			return nil, err
-		}
-		for _, key := range splitKeys(buf[:n]) {
-			out, done, err := s.handleKey(key)
-			if done {
-				return out, err
+		select {
+		case <-resized:
+			continue
+		case r := <-keys:
+			if r.err != nil {
+				return nil, r.err
+			}
+			for _, key := range splitKeys(r.b) {
+				out, done, err := s.handleKey(key)
+				if done {
+					return out, err
+				}
 			}
 		}
 	}
@@ -279,7 +303,7 @@ func (s *selector) draw() {
 	fmt.Fprintf(&b, "\x1b[1m%s\x1b[0m\r\n", truncate(s.t.title(), w-1))
 	fmt.Fprintf(&b, "%s\r\n", truncate(fmt.Sprintf("%d of %d files selected, %s of %s",
 		count, len(s.t.files), formatBytes(size), formatBytes(totalSize(s.t.files))), w-1))
-	b.WriteString(strings.Repeat("─", min(w-1, 78)) + "\r\n")
+	b.WriteString(strings.Repeat("─", w-1) + "\r\n")
 
 	for i := s.top; i < len(s.rows) && i < s.top+page; i++ {
 		n := s.rows[i]
@@ -300,9 +324,8 @@ func (s *selector) draw() {
 		if n.isDir {
 			left += "/"
 		}
-		room := w - 1 - len([]rune(right)) - 2
-		left = truncate(left, room)
-		line := left + strings.Repeat(" ", max(0, room-len([]rune(left)))) + "  " + right
+		room := w - 1 - dispWidth(right) - 2
+		line := padRight(left, room) + "  " + right
 		if i == s.cursor {
 			line = "\x1b[7m" + line + "\x1b[0m"
 		}

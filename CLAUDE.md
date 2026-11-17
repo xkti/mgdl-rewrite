@@ -39,6 +39,8 @@ Tests are hermetic (`e2e_test.go` runs a fake API + storage + proxy with
 | `log.go` | `infof`/`warnf`/`debugf`; erases and redraws the dashboard around each line. |
 | `select.go` | `--select` tree picker (raw mode, alternate screen). |
 | `term*.go` | TTY detection, width, Windows VT enablement. |
+| `width.go` | Display width (wide CJK/emoji = 2, combining = 0), `truncate`, `padRight`. |
+| `resize_*.go` | `watchResize`: SIGWINCH on Unix, width polling (250 ms) on Windows. |
 
 ## Key invariants — don't break these
 
@@ -97,3 +99,10 @@ Tests are hermetic (`e2e_test.go` runs a fake API + storage + proxy with
   `sanitize` returns the reason; every rename among the selected files (all files
   with `--list`) is reported on **stderr** via `noticef`, never stdout.
 - **Piped stdout:** no cursor movement; plain timestamped lines, status every 10s.
+- **Terminal output is measured in display columns** (`dispWidth`), never runes or
+  bytes, and every drawn line stays narrower than the terminal so none wraps.
+  Dashboard rows (`rowLayout`): the name column takes what's left after the bar,
+  percentage and tail, up to the longest name; the bar shrinks (20 → 8) before
+  names are cut. Redraws happen on every tick and on resize; after a shrink the
+  previous frame's rows are recounted as the terminal re-wrapped them
+  (`frameRows`) before moving up, and each frame ends with `ESC[J`.

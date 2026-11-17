@@ -10,8 +10,12 @@ import (
 	"time"
 )
 
-// barWidth is the character width of each per-file progress bar.
-const barWidth = 20
+// barWidth is the width of each per-file progress bar; it narrows to minBarWidth
+// when the terminal is too narrow for the file names.
+const (
+	barWidth    = 20
+	minBarWidth = 8
+)
 
 // refreshInterval is how often the dashboard redraws.
 const refreshInterval = 200 * time.Millisecond
@@ -142,12 +146,12 @@ func (s *slot) sample(now time.Time) slotSnap {
 // and an aggregate line. It renders in place on a TTY, or prints plain periodic
 // status lines when stdout is piped.
 type progress struct {
-	title      string
-	totalFiles int
-	totalBytes int64 // every selected file's size is known up front from the API
-	nameW      int
-	slots      []*slot
-	started    time.Time
+	title       string
+	totalFiles  int
+	totalBytes  int64 // every selected file's size is known up front from the API
+	longestName int   // display width of the longest selected file name
+	slots       []*slot
+	started     time.Time
 
 	mu        sync.Mutex
 	completed int
@@ -163,7 +167,8 @@ type progress struct {
 	speedWindow  time.Duration
 	minSpeedSpan time.Duration
 
-	lastLines int
+	lastLines int   // lines in the frame on screen
+	lastWidth []int // display width of each of those lines, to tell how a resize re-wrapped them
 	tty       bool
 
 	stopOnce sync.Once
@@ -172,14 +177,9 @@ type progress struct {
 }
 
 func newProgress(title string, files []*node, rows int) *progress {
-	nameW := 8
+	longest := 8
 	for _, f := range files {
-		if n := len([]rune(f.name)); n > nameW {
-			nameW = n
-		}
-	}
-	if nameW > 28 {
-		nameW = 28
+		longest = max(longest, dispWidth(f.name))
 	}
 	if rows > len(files) {
 		rows = len(files)
@@ -192,7 +192,7 @@ func newProgress(title string, files []*node, rows int) *progress {
 		title:        title,
 		totalFiles:   len(files),
 		totalBytes:   totalSize(files),
-		nameW:        nameW,
+		longestName:  longest,
 		slots:        slots,
 		started:      time.Now(),
 		tty:          con.tty,
@@ -225,6 +225,12 @@ func (p *progress) start(ctx context.Context) {
 		}
 		t := time.NewTicker(interval)
 		defer t.Stop()
+		var resized <-chan struct{}
+		if p.tty {
+			ch, stop := watchResize()
+			defer stop()
+			resized = ch
+		}
 		for {
 			select {
 			case <-p.quit:
@@ -233,6 +239,8 @@ func (p *progress) start(ctx context.Context) {
 				return
 			case <-t.C:
 				p.render()
+			case <-resized:
+				p.render() // redraw at the new width straight away
 			}
 		}
 	}()
@@ -336,17 +344,44 @@ func (p *progress) render() {
 
 // eraseLocked removes the drawn dashboard, leaving the cursor at its top.
 func (p *progress) eraseLocked() {
-	if p.lastLines == 0 {
-		return
+	if up := p.rowsOnScreen(terminalWidth()); up > 0 {
+		os.Stdout.WriteString(fmt.Sprintf("\x1b[%dA\r\x1b[J", up))
 	}
-	var b strings.Builder
-	fmt.Fprintf(&b, "\x1b[%dA", p.lastLines)
-	for i := 0; i < p.lastLines; i++ {
-		b.WriteString("\x1b[2K\n")
+	p.lastLines, p.lastWidth = 0, nil
+}
+
+// rowsOnScreen is how many terminal rows the frame on screen occupies at the
+// current width. Each line was drawn narrower than the terminal, but if the window
+// has since shrunk, the terminal has re-wrapped the longer ones onto several rows.
+func (p *progress) rowsOnScreen(cols int) int {
+	return frameRows(p.lastWidth, cols)
+}
+
+func frameRows(widths []int, cols int) int {
+	rows := 0
+	for _, w := range widths {
+		rows += max(1, (w+cols-1)/cols)
 	}
-	fmt.Fprintf(&b, "\x1b[%dA", p.lastLines)
-	os.Stdout.WriteString(b.String())
-	p.lastLines = 0
+	return rows
+}
+
+// Layout of a file row: " NAME BAR 100% ×4 TAIL". The name column gets whatever
+// the rest leaves, so a wide window shows long names in full; when names don't
+// fit, the bar gives up columns first, then names are shortened.
+const (
+	rowFixedW = 1 + 1 + 1 + 4 + 1 + 3 + 1 // margins, percentage, connections (bar excluded)
+	rowTailW  = 24                        // "  38.2 MiB/s  ETA 0:25" with room to spare
+	minNameW  = 8
+)
+
+// rowLayout returns the name column and bar widths for a terminal cols wide.
+func rowLayout(cols, longest int) (nameW, barW int) {
+	room := cols - 1 - rowFixedW - rowTailW // for name + bar
+	barW = barWidth
+	if short := longest - (room - barW); short > 0 {
+		barW = max(minBarWidth, barW-short)
+	}
+	return max(minNameW, min(longest, room-barW)), barW
 }
 
 // renderLocked paints a frame (TTY) or prints one status line (plain). Callers
@@ -398,7 +433,8 @@ func (p *progress) renderLocked() {
 	}
 
 	width := terminalWidth()
-	rule := strings.Repeat("─", min(width-1, 78))
+	nameW, barW := rowLayout(width, p.longestName)
+	rule := strings.Repeat("─", width-1)
 	lines := []string{p.title, rule}
 	for _, r := range rows {
 		if !r.active {
@@ -416,29 +452,30 @@ func (p *progress) renderLocked() {
 		if r.conns > 1 {
 			conns = fmt.Sprintf("×%-2d", r.conns)
 		}
-		lines = append(lines, fmt.Sprintf(" %-*s %s %3d%% %s %s",
-			p.nameW, truncate(r.name, p.nameW), bar(r.done, r.total), pct(r.done, r.total), conns, tail))
+		lines = append(lines, fmt.Sprintf(" %s %s %3d%% %s %s",
+			padRight(r.name, nameW), bar(r.done, r.total, barW), pct(r.done, r.total), conns, tail))
 	}
 	lines = append(lines, rule)
 	lines = append(lines, fmt.Sprintf(" %d/%d done%s  %s left  %s  ETA %s",
 		completed+skipped, p.totalFiles, failedSuffix(failed),
 		formatBytes(int64(remaining)), formatSpeed(agg), eta))
 
+	// Go back to the top of the previous frame (counting rows a shrink re-wrapped),
+	// overwrite it line by line, and clear whatever is left below. Every line stays
+	// narrower than the terminal so none of them wraps.
 	var b strings.Builder
-	if p.lastLines > 0 {
-		fmt.Fprintf(&b, "\x1b[%dA", p.lastLines)
+	if up := p.rowsOnScreen(width); up > 0 {
+		fmt.Fprintf(&b, "\x1b[%dA\r", up)
 	}
+	p.lastWidth = p.lastWidth[:0]
 	for _, ln := range lines {
+		ln = truncate(ln, width-1)
+		p.lastWidth = append(p.lastWidth, dispWidth(ln))
 		b.WriteString("\x1b[2K")
-		b.WriteString(truncate(ln, width-1))
+		b.WriteString(ln)
 		b.WriteString("\n")
 	}
-	if extra := p.lastLines - len(lines); extra > 0 {
-		for i := 0; i < extra; i++ {
-			b.WriteString("\x1b[2K\n")
-		}
-		fmt.Fprintf(&b, "\x1b[%dA", extra)
-	}
+	b.WriteString("\x1b[J")
 	os.Stdout.WriteString(b.String())
 	p.lastLines = len(lines)
 }
