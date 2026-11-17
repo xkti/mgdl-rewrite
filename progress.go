@@ -11,7 +11,8 @@ import (
 )
 
 // barWidth is the width of each per-file progress bar; it narrows to minBarWidth
-// when the terminal is too narrow for the file names.
+// when the terminal is too narrow for the file names, and is hidden altogether
+// when even that would squeeze the name column below minNameW.
 const (
 	barWidth    = 20
 	minBarWidth = 8
@@ -363,18 +364,24 @@ func frameRows(widths []int, cols int) int {
 	return rows
 }
 
-// Layout of a file row: " NAME BAR 100% ×4 TAIL". The name column gets whatever
+// Layout of a file row: " NAME SIZE BAR 100% ×4 TAIL". The name column gets whatever
 // the rest leaves, so a wide window shows long names in full; when names don't
-// fit, the bar gives up columns first, then names are shortened.
+// fit, the bar gives up columns first, then names are shortened; on a terminal too
+// thin for both a minimum bar and a minimum name the bar (and its space) is dropped.
 const (
-	rowFixedW = 1 + 1 + 1 + 4 + 1 + 3 + 1 // margins, percentage, connections (bar excluded)
-	rowTailW  = 24                        // "  38.2 MiB/s  ETA 0:25" with room to spare
+	rowSizeW  = 10                                       // "1023.9 MiB"
+	rowFixedW = 1 + 1 + rowSizeW + 1 + 1 + 4 + 1 + 3 + 1 // margins, size, percentage, connections (bar excluded)
+	rowTailW  = 24                                       // "  38.2 MiB/s  ETA 0:25" with room to spare
 	minNameW  = 8
 )
 
-// rowLayout returns the name column and bar widths for a terminal cols wide.
+// rowLayout returns the name column and bar widths for a terminal cols wide. A bar
+// width of 0 means the bar is hidden.
 func rowLayout(cols, longest int) (nameW, barW int) {
 	room := cols - 1 - rowFixedW - rowTailW // for name + bar
+	if room < minNameW+minBarWidth {
+		return max(minNameW, min(longest, room+1)), 0 // +1: the bar's separator
+	}
 	barW = barWidth
 	if short := longest - (room - barW); short > 0 {
 		barW = max(minBarWidth, barW-short)
@@ -450,8 +457,12 @@ func (p *progress) renderLocked() {
 		if r.conns > 1 {
 			conns = fmt.Sprintf("×%-2d", r.conns)
 		}
-		lines = append(lines, fmt.Sprintf(" %s %s %3d%% %s %s",
-			padRight(r.name, nameW), bar(r.done, r.total, barW), pct(r.done, r.total), conns, tail))
+		barCol := ""
+		if barW > 0 {
+			barCol = " " + bar(r.done, r.total, barW)
+		}
+		lines = append(lines, fmt.Sprintf(" %s %*s%s %3d%% %s %s",
+			padRight(r.name, nameW), rowSizeW, formatBytes(r.total), barCol, pct(r.done, r.total), conns, tail))
 	}
 	lines = append(lines, rule)
 	lines = append(lines, fmt.Sprintf(" %d/%d done%s  %s left  %s  ETA %s",

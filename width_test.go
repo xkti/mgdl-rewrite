@@ -60,14 +60,17 @@ func TestTruncateByColumns(t *testing.T) {
 }
 
 func TestRowLayout(t *testing.T) {
-	// At 80 columns, name + bar get 80 - 1 - 12 - 24 = 43.
+	// At 80 columns, name + bar get 80 - 1 - 23 - 24 = 32.
 	for _, c := range []struct{ cols, longest, name, bar int }{
-		{80, 9, 9, 20},                   // short name: full bar
-		{80, 23, 23, 20},                 // exactly fits
-		{80, 30, 30, 13},                 // bar gives up 7 columns, name shown in full
-		{80, 40, 35, minBarWidth},        // bar at its minimum, name shortened
-		{250, 120, 120, 20},              // wide terminal: whole name and full bar
-		{30, 120, minNameW, minBarWidth}, // very narrow: both at their minimum
+		{80, 9, 9, 20},                  // short name: full bar
+		{80, 12, 12, 20},                // exactly fits
+		{80, 19, 19, 13},                // bar gives up 7 columns, name shown in full
+		{80, 30, 24, minBarWidth},       // bar at its minimum, name shortened
+		{250, 120, 120, 20},             // wide terminal: whole name and full bar
+		{64, 30, minNameW, minBarWidth}, // both at their minimum
+		{63, 30, 16, 0},                 // too thin for both: bar hidden, name gets its room
+		{63, 9, 9, 0},                   // ...even when the name is short
+		{30, 120, minNameW, 0},          // very narrow: no bar, name at its minimum
 	} {
 		name, bar := rowLayout(c.cols, c.longest)
 		if name != c.name || bar != c.bar {
@@ -95,7 +98,11 @@ func TestRenderFitsWidth(t *testing.T) {
 	for _, cols := range []int{40, 80, 200} {
 		name := strings.Repeat("長い名前", 20) + ".mkv"
 		nw, bw := rowLayout(cols, dispWidth(name))
-		row := " " + padRight(name, nw) + " " + bar(5, 10, bw) + "  50% ×4  38.2 MiB/s  ETA 0:25"
+		barCol := ""
+		if bw > 0 {
+			barCol = " " + bar(5, 10, bw)
+		}
+		row := " " + padRight(name, nw) + "  100.0 MiB" + barCol + "  50% ×4  38.2 MiB/s  ETA 0:25"
 		if w := dispWidth(truncate(row, cols-1)); w > cols-1 {
 			t.Errorf("%d cols: row is %d wide", cols, w)
 		}
@@ -139,16 +146,23 @@ func TestDashboardUsesWidth(t *testing.T) {
 	long := strings.Repeat("Very Long Episode Title ", 6) + "S01E01 1080p.mkv" // 160 columns
 	cjk := strings.Repeat("日本語のファイル名", 4) + ".mp4"                             // 76 columns
 
-	wide := strings.Join(renderFrame(t, 220, long, cjk), "\n")
+	wide := strings.Join(renderFrame(t, 240, long, cjk), "\n")
 	if !strings.Contains(wide, long) || !strings.Contains(wide, cjk) {
-		t.Errorf("220 columns: names were cut:\n%s", wide)
+		t.Errorf("240 columns: names were cut:\n%s", wide)
 	}
-	for _, cols := range []int{220, 80, 50} {
+	if !strings.Contains(wide, " 100.0 MiB ") {
+		t.Errorf("240 columns: expected each file's size:\n%s", wide)
+	}
+	for _, cols := range []int{240, 80, 50} {
 		for _, ln := range renderFrame(t, cols, long, cjk) {
 			if w := dispWidth(ln); w > cols-1 {
 				t.Errorf("%d columns: line is %d wide: %q", cols, w, ln)
 			}
 		}
+	}
+	thin := strings.Join(renderFrame(t, 60, long, cjk), "\n")
+	if strings.ContainsAny(thin, "█░") || !strings.Contains(thin, "ETA") {
+		t.Errorf("60 columns: expected the bar hidden and the ETA kept:\n%s", thin)
 	}
 	narrow := strings.Join(renderFrame(t, 80, long, cjk), "\n")
 	if !strings.Contains(narrow, "…") || !strings.Contains(narrow, "ETA") {

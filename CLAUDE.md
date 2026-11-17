@@ -103,7 +103,7 @@ Tests are hermetic (`e2e_test.go` runs a fake API + storage + proxy with
 - **Terminal output is measured in display columns** (`dispWidth`), never runes or
   bytes, and every drawn line stays narrower than the terminal so none wraps.
   Dashboard rows (`rowLayout`): the name column takes what's left after the bar,
-  percentage and tail, up to the longest name; the bar shrinks (20 → 8) before
-  names are cut. Redraws happen on every tick and on resize; after a shrink the
+  size, percentage and tail, up to the longest name; the bar shrinks (20 → 8) before
+  names are cut, and is hidden when a minimum bar plus a minimum name won't fit. Redraws happen on every tick and on resize; after a shrink the
   previous frame's rows are recounted as the terminal re-wrapped them
   (`frameRows`) before moving up, and each frame ends with `ESC[J`.
