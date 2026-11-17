@@ -55,7 +55,7 @@ func unpackFileKey(k []byte) (*fileKey, error) {
 	}
 	fk := &fileKey{}
 	copy(fk.raw[:], k)
-	for i := 0; i < 16; i++ {
+	for i := range 16 {
 		fk.aes[i] = k[i] ^ k[i+16]
 	}
 	copy(fk.nonce[:], k[16:24])
@@ -201,19 +201,13 @@ func (m *macStream) resetChunk() {
 	m.mode = cipher.NewCBCEncrypter(m.block, iv[:])
 	m.last = iv
 	m.npend = 0
-	m.chunkEnd = macChunkEnd(m.pos)
-	if m.chunkEnd > m.fileEnd {
-		m.chunkEnd = m.fileEnd
-	}
+	m.chunkEnd = min(macChunkEnd(m.pos), m.fileEnd)
 }
 
 // cbc runs whole blocks through the encrypter, remembering the last output block.
 func (m *macStream) cbc(p []byte) {
 	for len(p) > 0 {
-		n := len(p)
-		if n > len(m.scratch) {
-			n = len(m.scratch)
-		}
+		n := min(len(p), len(m.scratch))
 		m.mode.CryptBlocks(m.scratch[:n], p[:n])
 		copy(m.last[:], m.scratch[n-16:n])
 		p = p[n:]
@@ -239,10 +233,7 @@ func (m *macStream) Write(p []byte) [][16]byte {
 	for len(p) > 0 {
 		// Only feed up to the end of the current chunk.
 		room := m.chunkEnd - m.pos
-		take := int64(len(p))
-		if take > room {
-			take = room
-		}
+		take := min(int64(len(p)), room)
 		q := p[:take]
 		p = p[take:]
 		m.pos += take

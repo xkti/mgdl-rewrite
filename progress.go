@@ -216,9 +216,7 @@ func (p *progress) start(ctx context.Context) {
 	}
 	con.mu.Unlock()
 
-	p.wg.Add(1)
-	go func() {
-		defer p.wg.Done()
+	p.wg.Go(func() {
 		interval := refreshInterval
 		if !p.tty {
 			interval = plainInterval
@@ -243,7 +241,7 @@ func (p *progress) start(ctx context.Context) {
 				p.render() // redraw at the new width straight away
 			}
 		}
-	}()
+	})
 }
 
 // stop halts the refresh loop, erases the dashboard and restores the cursor.

@@ -6,7 +6,8 @@ Guidance for working on `mgdl`, a Go MEGA.nz downloader (rewrite of
 ## Constraints
 
 - **Dependencies:** stdlib plus `golang.org/x/term` and `golang.org/x/sys` only.
-  Pinned to versions that still support Go 1.24 (newer x/ releases require 1.25+).
+  Kept at their latest releases; those set the minimum Go version (1.26 for
+  x/sys v0.50.0 and x/term v0.48.0). Run `go fix ./...` after raising it.
 - **Binary units everywhere.** K/M/G are powers of 1024 (`parseSize`, `formatBytes`).
 - **Build with `-trimpath`** so local paths don't leak into the binary.
 - **Cross-platform** (Linux/macOS/Windows), no Windows GUI/double-click mode.

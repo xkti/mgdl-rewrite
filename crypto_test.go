@@ -46,7 +46,7 @@ func TestMACBoundaries(t *testing.T) {
 		pos += i * macChunkBase
 		want = append(want, pos)
 	}
-	for i := 0; i < 5; i++ {
+	for range 5 {
 		pos += macSteadyStep
 		want = append(want, pos)
 	}

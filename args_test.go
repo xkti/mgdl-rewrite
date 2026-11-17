@@ -1,6 +1,7 @@
 package main
 
 import (
+	"maps"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -146,19 +147,15 @@ func TestSanitizeName(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		// Trailing dots and spaces are invalid on Windows and are stripped, and
 		// device names are reserved even with an extension.
-		for in, want := range map[string]string{
+		maps.Copy(cases, map[string]string{
 			"..": "_", ".": "_", "name.": "name", "name . ": "name",
 			"CON": "_CON", "nul": "_nul", "NUL.txt": "_NUL.txt", "con.tar.gz": "_con.tar.gz",
 			"COM1": "_COM1", "LPT9.log": "_LPT9.log", "CONSOLE": "CONSOLE", "a:b?": "a_b_",
-		} {
-			cases[in] = want
-		}
+		})
 	} else {
-		for in, want := range map[string]string{
+		maps.Copy(cases, map[string]string{
 			"..": "_..", ".": "_.", "CON": "CON", "name.": "name.", "a:b?": "a:b?",
-		} {
-			cases[in] = want
-		}
+		})
 	}
 	for in, want := range cases {
 		if got := sanitizeName(in); got != want {

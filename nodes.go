@@ -8,6 +8,7 @@ import (
 	"path"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"sort"
 	"strings"
 )
@@ -185,7 +186,7 @@ func decryptNode(master []byte, r rawNode, shareRoot string) (*node, error) {
 // the link's master key. The others belong to other shares and can't be decrypted
 // with it (AES-ECB would "succeed" and produce garbage), so they are never tried.
 func nodeKey(master []byte, k, shareRoot string) ([]byte, error) {
-	for _, pair := range strings.Split(k, "/") {
+	for pair := range strings.SplitSeq(k, "/") {
 		h, enc, ok := strings.Cut(pair, ":")
 		if !ok || h != shareRoot {
 			continue
@@ -367,8 +368,8 @@ func renameNotes(t *tree, files []*node) []string {
 		for p := f; p != nil && p != t.root; p = p.parent {
 			chain = append(chain, p)
 		}
-		for i := len(chain) - 1; i >= 0; i-- {
-			add(chain[i])
+		for _, c := range slices.Backward(chain) {
+			add(c)
 		}
 	}
 	return notes

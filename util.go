@@ -88,10 +88,7 @@ func pct(done, total int64) int {
 	if total <= 0 {
 		return 0
 	}
-	v := int(float64(done) / float64(total) * 100)
-	if v > 100 {
-		v = 100
-	}
+	v := min(int(float64(done)/float64(total)*100), 100)
 	return v
 }
 

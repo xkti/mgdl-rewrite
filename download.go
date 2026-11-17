@@ -415,10 +415,8 @@ func (j *job) runChunks(ctx context.Context, pending []int, workers int) error {
 	var wg sync.WaitGroup
 	var once sync.Once
 	var firstErr error
-	for w := 0; w < workers; w++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+	for range workers {
+		wg.Go(func() {
 			for ci := range queue {
 				if ctx.Err() != nil {
 					return
@@ -428,7 +426,7 @@ func (j *job) runChunks(ctx context.Context, pending []int, workers int) error {
 					return
 				}
 			}
-		}()
+		})
 	}
 	wg.Wait()
 	if firstErr != nil {

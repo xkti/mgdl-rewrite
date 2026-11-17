@@ -12,7 +12,7 @@ go build -trimpath -o mgdl .
 GOOS=windows GOARCH=amd64 go build -trimpath -o mgdl.exe .
 ```
 
-Needs Go 1.24+. Dependencies: `golang.org/x/term` and `golang.org/x/sys` only.
+Needs Go 1.26+. Dependencies: `golang.org/x/term` and `golang.org/x/sys` only.
 
 ## Use
 

@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"math/rand"
 	"net/http"
 	"net/http/httptest"
@@ -110,7 +111,7 @@ func (m *fakeMega) addFile(handle, name string, size int, seed int64, badMAC boo
 	key := make([]byte, 32)
 	copy(key[16:24], nonce[:])
 	copy(key[24:32], mac[:])
-	for i := 0; i < 16; i++ {
+	for i := range 16 {
 		key[i] = aesKey[i] ^ key[i+16]
 	}
 	f := &fakeFile{handle: handle, name: name, plain: plain, enc: enc, key: key}
@@ -296,9 +297,7 @@ func (m *fakeMega) serveProxy(w http.ResponseWriter, r *http.Request) {
 		panic(http.ErrAbortHandler)
 	}
 	defer resp.Body.Close()
-	for k, v := range resp.Header {
-		w.Header()[k] = v
-	}
+	maps.Copy(w.Header(), resp.Header)
 	w.WriteHeader(resp.StatusCode)
 	if _, err := io.Copy(w, resp.Body); err != nil {
 		panic(http.ErrAbortHandler)

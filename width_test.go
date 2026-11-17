@@ -126,7 +126,7 @@ func renderFrame(t *testing.T, cols int, names ...string) []string {
 	w.Close()
 	raw, _ := io.ReadAll(r)
 	var lines []string
-	for _, ln := range strings.Split(string(raw), "\n") {
+	for ln := range strings.SplitSeq(string(raw), "\n") {
 		ln = regexp.MustCompile(`\x1b\[[0-9;?]*[A-Za-z]`).ReplaceAllString(ln, "")
 		if strings.TrimSpace(ln) != "" {
 			lines = append(lines, strings.TrimRight(ln, "\r"))
