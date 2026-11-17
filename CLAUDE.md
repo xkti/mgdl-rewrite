@@ -13,6 +13,15 @@ Guidance for working on `mgdl`, a Go MEGA.nz downloader (rewrite of
 - **Cross-platform** (Linux/macOS/Windows), no Windows GUI/double-click mode.
 - Metadata via the MEGA API **directly**; file data **through the proxy**. A fresh
   `g` download URL for every chunk attempt; never reuse one.
+- **Plain words in normal output, detail in warnings and errors.** Status lines,
+  the dashboard, summaries and usage text use everyday words a non-technical user
+  understands ("done", "verified", not "MAC-checked"). Warnings and errors keep the
+  technical detail (e.g. `failed verification (MAC mismatch)`) so problems can be
+  diagnosed; don't simplify them. Deeper detail goes in `-v` debug output.
+- **"verified" is reserved for `--verify-existing`** (a finished file re-checked on
+  disk). A fresh download prints `done`, coloured green (checked), yellow (verify on
+  but the partial was started or resumed with `--no-verify`, so it can't be) or
+  plain (`--no-verify`). The summary's `(N verified)` count stays as is.
 
 ## Build / test
 

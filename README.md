@@ -38,7 +38,7 @@ Interrupted? Run the same command again and it picks up where it stopped.
 | `-C, --chunk-size SIZE` | `256M` | Bytes per request; `K/M/G` are binary (1024). Min `1M`. |
 | `--sequential` | off | One chunk at a time per file, no preallocation. |
 | `-r, --retries N` | `5` | Attempts per chunk; `0` = forever. Resets after real progress. |
-| `-x, --proxy LIST` | built-in Worker | Comma-separated proxy domains, picked at random per request. |
+| `-x, --proxy LIST` | 4 built-in Workers | Comma-separated proxy domains, picked at random per request. |
 | `--direct` | off | Skip the proxy. |
 | `-p, --path PATH` | | File or folder to download, relative to the link's folder. Repeatable. |
 | `-l, --list` | | Print the file tree with sizes, then exit. |
@@ -82,7 +82,11 @@ Interrupted? Run the same command again and it picks up where it stopped.
   separators, duplicates within a folder) are changed, and each change is reported
   on stderr, e.g. `renamed   CON.txt → _CON.txt  (CON is a reserved name on Windows)`.
 - **Output**: a live dashboard on a terminal; plain timestamped status lines every
-  10s when stdout is piped or redirected.
+  10s when stdout is piped or redirected. A finished download prints `done`: green
+  if it was verified, yellow if it couldn't be (part of it was downloaded with
+  `--no-verify`; run `--verify-existing` later to check it), plain with
+  `--no-verify`. With `--verify-existing`, a file already on disk that checks out
+  prints `verified`.
 
 ## Proxy
 
