@@ -22,7 +22,7 @@ var defaultProxies = []string{
 
 const (
 	defaultChunk = 256 << 20
-	minChunk     = 1 << 20
+	minChunk     = 128 << 20
 )
 
 var errNoLinks = errors.New("no link given")
@@ -93,7 +93,7 @@ func parseArgs(argv []string) (*config, error) {
 			cfg.connections, err = posInt("connections", val, false)
 		case "C", "chunk-size":
 			if cfg.chunkSize, err = parseSize(val); err == nil && cfg.chunkSize < minChunk {
-				err = fmt.Errorf("--chunk-size must be at least 1M")
+				err = fmt.Errorf("--chunk-size must be at least 128M")
 			}
 		case "r", "retries", "retry":
 			cfg.retries, err = posInt("retries", val, true)
@@ -293,7 +293,7 @@ Transfer:
   -j, --jobs N            files downloaded at once (default 4)
   -c, --connections N     connections per file (default 4)
   -C, --chunk-size SIZE   bytes per request, e.g. 128M, 1G; suffixes are binary
-                          (default 256M, minimum 1M)
+                          (default 256M, minimum 128M)
       --sequential        fetch each file's chunks one at a time, without
                           preallocating (can't resume a parallel partial download)
   -r, --retries N         attempts per chunk; 0 = retry forever (default 5)

@@ -73,7 +73,7 @@ func TestParseArgsErrors(t *testing.T) {
 	for _, argv := range [][]string{
 		{},
 		{"-j", "0", testFileLink},
-		{"-C", "512K", testFileLink},
+		{"-C", "127M", testFileLink},
 		{"--bogus", testFileLink},
 		{"-p", "x", testFileLink, testFolderLink},
 		{"--list=yes", testFileLink},

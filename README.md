@@ -35,7 +35,7 @@ Interrupted? Run the same command again and it picks up where it stopped.
 | `-o, --output DIR` | `.` | Download destination. |
 | `-j, --jobs N` | `4` | Files downloaded at once. |
 | `-c, --connections N` | `4` | Connections per file (chunks fetched in parallel). |
-| `-C, --chunk-size SIZE` | `256M` | Bytes per request; `K/M/G` are binary (1024). Min `1M`. |
+| `-C, --chunk-size SIZE` | `256M` | Bytes per request; `K/M/G` are binary (1024). Min `128M`. |
 | `--sequential` | off | One chunk at a time per file, no preallocation. |
 | `-r, --retries N` | `5` | Attempts per chunk; `0` = forever. Resets after real progress. |
 | `-x, --proxy LIST` | 4 built-in Workers | Comma-separated proxy domains, picked at random per request. |
