@@ -3,3 +3,4 @@
 /mgdl-*
 *.part
 .mgdl-*
+/dist/
