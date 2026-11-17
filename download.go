@@ -260,9 +260,11 @@ func (j *job) run(ctx context.Context) (fileResult, error) {
 		return 0, fmt.Errorf("renaming: %w", err)
 	}
 	e.ctl.remove(n.handle)
+	// "verified" is reserved for --verify-existing; the colour says whether the
+	// MAC was checked (green), couldn't be (yellow), or verification is off (plain).
 	tag := "done    "
 	if verified {
-		tag = colour("32", "verified")
+		tag = colour("32", "done    ")
 	} else if j.e.cfg.verify && n.size > 0 {
 		tag = colour("33", "done    ")
 	}

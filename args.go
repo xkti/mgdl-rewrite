@@ -6,12 +6,19 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 )
 
-// defaultProxy is the Cloudflare Worker that relays userstorage downloads.
-const defaultProxy = "https://flat-resonance-cfdb.ililli.workers.dev"
+// defaultProxies are the Cloudflare Workers that relay userstorage downloads;
+// one is picked at random per chunk attempt, as with -x.
+var defaultProxies = []string{
+	"https://flat-resonance-cfdb.ililli.workers.dev",
+	"https://m.ndhqaroux.workers.dev",
+	"https://a.qi5mfqlu7.workers.dev",
+	"https://x.hit4zt0oj.workers.dev",
+}
 
 const (
 	defaultChunk = 256 << 20
@@ -195,7 +202,7 @@ func parseArgs(argv []string) (*config, error) {
 
 	cfg.proxies = splitProxies(proxies)
 	if len(cfg.proxies) == 0 {
-		cfg.proxies = []string{defaultProxy}
+		cfg.proxies = slices.Clone(defaultProxies)
 	}
 	if rate != "" {
 		n, err := parseSize(rate)
@@ -251,6 +258,15 @@ func splitProxies(s string) []string {
 	return out
 }
 
+// defaultProxyList formats defaultProxies for the usage text, one per line.
+func defaultProxyList() string {
+	hosts := make([]string, len(defaultProxies))
+	for i, p := range defaultProxies {
+		hosts[i] = strings.TrimPrefix(p, "https://")
+	}
+	return strings.Join(hosts, ",\n                          ")
+}
+
 func usage(w io.Writer) {
 	fmt.Fprintf(w, `mgdl %s — MEGA.nz downloader with on-the-fly decryption and verification
 
@@ -283,7 +299,8 @@ Transfer:
   -r, --retries N         attempts per chunk; 0 = retry forever (default 5)
       --limit-rate RATE   total bandwidth cap, e.g. 40M, 500K (default unlimited)
   -x, --proxy LIST        comma-separated proxy domains, one picked at random per
-                          request (default %s)
+                          request (default:
+                          %s)
       --direct            don't use a proxy; fetch from MEGA directly
   -i, --input FILE        read links from FILE, one per line ("-" = stdin)
       --no-space-check    don't check for free disk space before downloading
@@ -305,5 +322,5 @@ run resumes where it stopped: just run the same command again.
 
 When stdout is not a terminal, the live dashboard is replaced by periodic status
 lines. Sizes use binary units (1 MiB = 1024 KiB).
-`, version, defaultProxy)
+`, version, defaultProxyList())
 }

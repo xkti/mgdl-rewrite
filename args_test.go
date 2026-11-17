@@ -64,7 +64,7 @@ func TestParseArgsDefaults(t *testing.T) {
 		t.Fatal(err)
 	}
 	if cfg.jobs != 4 || cfg.connections != 4 || cfg.chunkSize != 256<<20 || cfg.retries != 5 ||
-		!cfg.verify || cfg.output != "." || !reflect.DeepEqual(cfg.proxies, []string{defaultProxy}) {
+		!cfg.verify || cfg.output != "." || !reflect.DeepEqual(cfg.proxies, defaultProxies) {
 		t.Fatalf("defaults: %+v", cfg)
 	}
 }
