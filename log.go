@@ -70,6 +70,14 @@ func warnf(format string, args ...any) {
 	con.emit(os.Stderr, errColour("33", "warning: ")+line)
 }
 
+// noticef prints something the user should know but that isn't a problem, on
+// stderr so it stays out of piped output.
+func noticef(format string, args ...any) {
+	line := fmt.Sprintf(format, args...)
+	con.toFile("NOTE", line)
+	con.emit(os.Stderr, errColour("36", line))
+}
+
 // debugf records verbose detail: stderr with -v, and the --log file regardless.
 func debugf(format string, args ...any) {
 	if !con.verbose && con.logFile == nil {

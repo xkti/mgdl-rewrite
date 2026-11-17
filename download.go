@@ -88,7 +88,13 @@ type engine struct {
 	ctl   *controlFile
 	prog  *progress
 	space *spaceGuard // nil with --no-space-check, or when free space is unknown
+
+	noSparseOnce sync.Once // the "filesystem can't do sparse files" notice
 }
+
+// markSparseFn flags a file sparse (a no-op where files are sparse anyway). A
+// variable so tests can simulate a filesystem without sparse support.
+var markSparseFn = markSparse
 
 // job is one file being downloaded.
 type job struct {
@@ -172,6 +178,7 @@ func (e *engine) fetchFile(ctx context.Context, n *node, row *slot) (fileResult,
 			return res, nil
 		}
 		if !errors.Is(err, errMACMismatch) {
+			j.discardIfEmpty()
 			return 0, err
 		}
 		macFails++
@@ -317,6 +324,8 @@ func (j *job) prepare() error {
 	case st.Mode == modeParallel && wantMode == modeSequential && st.doneBytes() > 0:
 		// Pre-checked for all files in checkModes; this is a backstop.
 		return errModeMismatch
+	case st.NoSparse:
+		// Stays sequential: see the sparse check below.
 	case st.Mode != wantMode:
 		debugf("%s: switching %s → %s", n.relPath, st.Mode, wantMode)
 		e.ctl.update(func() { st.Mode = wantMode })
@@ -341,9 +350,26 @@ func (j *job) prepare() error {
 		// Size the file up front (sparsely) so every worker can write at its own
 		// offset. On Windows the file must be flagged sparse first, or NTFS
 		// allocates it all and zero-fills ahead of every out-of-order write.
-		if err := markSparse(f); err != nil {
-			debugf("%s: cannot mark the .part sparse (%v); continuing", n.relPath, err)
+		if err := markSparseFn(f); err != nil {
+			if st.doneBytes() > 0 || len(st.Chunks) < 2 {
+				// Already allocated by an earlier run, or a single chunk written from
+				// the start (nothing out of order to zero-fill ahead of).
+				// Already allocated by an earlier run; carry on as it was.
+				debugf("%s: cannot mark the .part sparse (%v); continuing in parallel", n.relPath, err)
+			} else {
+				// Without sparse support, sizing the file up front allocates all of it,
+				// and Windows zero-fills ahead of every out-of-order write. Fetch this
+				// file sequentially instead, and keep it that way on resume.
+				debugf("%s: cannot mark the .part sparse (%v); switching to sequential", n.relPath, err)
+				e.noSparseOnce.Do(func() {
+					noticef("%s can't hold sparse files; downloading one connection per file to avoid zero-filling (a different --output avoids this)",
+						existingDir(e.tree.baseDir(e.cfg.output)))
+				})
+				e.ctl.update(func() { st.Mode, st.NoSparse = modeSequential, true })
+			}
 		}
+	}
+	if st.Mode == modeParallel {
 		if err := f.Truncate(n.size); err != nil {
 			return err
 		}
@@ -354,6 +380,24 @@ func (j *job) prepare() error {
 		}
 	}
 	return nil
+}
+
+// discardIfEmpty removes the .part and the file's state when it stopped (failed or
+// was interrupted) before anything was checkpointed: there is nothing to resume,
+// so they would only be clutter. j.f is already closed by run.
+func (j *job) discardIfEmpty() {
+	if j.st == nil {
+		return
+	}
+	if done, _, ok := j.e.ctl.progress(j.n.handle); !ok || done > 0 {
+		return
+	}
+	if err := os.Remove(j.part); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		debugf("%s: removing empty .part: %v", j.n.relPath, err)
+		return
+	}
+	j.e.ctl.remove(j.n.handle)
+	debugf("%s: no progress made; removed the empty .part and its state", j.n.relPath)
 }
 
 // runChunks downloads the pending chunks with the given number of workers. The

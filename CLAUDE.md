@@ -67,7 +67,11 @@ Tests are hermetic (`e2e_test.go` runs a fake API + storage + proxy with
   `--no-space-check` disables it. Real preallocation was benchmarked and rejected:
   same write speed on ext4, no fragmentation win on a full disk.
 - **Parallel `.part` files are sized up front (sparse; `markSparse` on Windows so
-  NTFS doesn't zero-fill ahead of out-of-order writes); sequential ones never are.** Resuming a
+  NTFS doesn't zero-fill ahead of out-of-order writes); sequential ones never are.**
+  If `markSparse` fails (exFAT/FAT32) on a fresh multi-chunk file, that file
+  switches to sequential and `fileState.NoSparse` keeps it sequential on resume, so
+  it's never fully allocated. A file that stops before any checkpoint
+  (`discardIfEmpty`) loses its `.part` and state: there is nothing to resume. Resuming a
   parallel partial with `--sequential` is refused up front (`checkModes`).
 - **Retries:** per chunk, counter reset after ≥ 8 MiB of progress; stalls (60s
   silent) are retried. Throttling — HTTP 429/503/509 and API -4/-6 — is waited out
@@ -88,4 +92,6 @@ Tests are hermetic (`e2e_test.go` runs a fake API + storage + proxy with
   after download is verification, not decryption: delete + redownload, as above.)
 - **Paths:** names are sanitised to a single component (no separators, no `..`,
   Windows-reserved names/characters) and duplicate sibling names get ` (2)`.
+  `sanitize` returns the reason; every rename among the selected files (all files
+  with `--list`) is reported on **stderr** via `noticef`, never stdout.
 - **Piped stdout:** no cursor movement; plain timestamped lines, status every 10s.

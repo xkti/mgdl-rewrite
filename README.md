@@ -75,7 +75,12 @@ Interrupted? Run the same command again and it picks up where it stopped.
   needs (counting only what's left of partial downloads) doesn't fit, mgdl stops
   and says how much is missing. Each file is re-checked as it starts, allowing for
   what the files already downloading still have to write. `.part` files are sparse
-  (flagged sparse on NTFS), so they only take up space as data arrives.
+  (flagged sparse on NTFS), so they only take up space as data arrives. On
+  filesystems without sparse files (exFAT, FAT32), large files are fetched one
+  connection at a time instead, so they never need to be allocated in full.
+- **Names** that can't be used as-is (Windows-reserved names like `CON`, path
+  separators, duplicates within a folder) are changed, and each change is reported
+  on stderr, e.g. `renamed   CON.txt → _CON.txt  (CON is a reserved name on Windows)`.
 - **Output**: a live dashboard on a terminal; plain timestamped status lines every
   10s when stdout is piped or redirected.
 

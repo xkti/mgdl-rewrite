@@ -60,13 +60,16 @@ func (c *chunkState) complete() bool { return c.Start+c.Done >= c.End }
 
 // fileState is the resumable state of one file.
 type fileState struct {
-	Path   string        `json:"path"` // for humans reading the file; not used to resume
-	Size   int64         `json:"size"`
-	Mode   string        `json:"mode"`
-	Verify bool          `json:"verify"` // false if started with --no-verify: cannot verify later
-	Chunks []*chunkState `json:"chunks"`
-	Folded int           `json:"folded"` // chunks [0, Folded) are fully folded into Meta
-	Meta   block16       `json:"meta"`   // running meta-MAC
+	Path   string `json:"path"` // for humans reading the file; not used to resume
+	Size   int64  `json:"size"`
+	Mode   string `json:"mode"`
+	Verify bool   `json:"verify"` // false if started with --no-verify: cannot verify later
+	// NoSparse: the filesystem can't hold sparse files, so the file was switched to
+	// sequential mode and must stay there (preallocating would zero-fill it).
+	NoSparse bool          `json:"nosparse,omitempty"`
+	Chunks   []*chunkState `json:"chunks"`
+	Folded   int           `json:"folded"` // chunks [0, Folded) are fully folded into Meta
+	Meta     block16       `json:"meta"`   // running meta-MAC
 }
 
 // doneBytes is how much of the file is checkpointed.

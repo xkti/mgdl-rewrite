@@ -50,6 +50,9 @@ type fakeMega struct {
 	metaErrs   []int // likewise for metadata requests (g without a link, and f)
 	linkReqs   atomic.Int64
 	apiRetries int // the client's retry budget for metadata calls
+
+	inflight    atomic.Int64 // storage requests being served right now
+	maxInflight atomic.Int64
 }
 
 func TestMain(m *testing.M) {
@@ -205,6 +208,14 @@ func (m *fakeMega) serveAPI(w http.ResponseWriter, r *http.Request) {
 // serveStorage answers GET /dl/HANDLE/START-END, MEGA's byte-range URL suffix.
 func (m *fakeMega) serveStorage(w http.ResponseWriter, r *http.Request) {
 	m.requests.Add(1)
+	now := m.inflight.Add(1)
+	defer m.inflight.Add(-1)
+	for {
+		top := m.maxInflight.Load()
+		if now <= top || m.maxInflight.CompareAndSwap(top, now) {
+			break
+		}
+	}
 	parts := strings.Split(strings.TrimPrefix(r.URL.Path, "/dl/"), "/")
 	f := m.files[parts[0]]
 	if f == nil || len(parts) != 2 {

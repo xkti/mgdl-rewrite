@@ -147,7 +147,13 @@ func processLink(ctx context.Context, cfg *config, api *apiClient, hc *http.Clie
 	}
 	if cfg.list {
 		printTree(os.Stdout, t, cfg.verbose)
+		for _, note := range renameNotes(t, t.files) {
+			noticef("%s", note)
+		}
 		return runStats{}, nil
+	}
+	for _, note := range renameNotes(t, files) {
+		noticef("%s", note)
 	}
 	if len(files) == 0 {
 		infof("%s: nothing selected", t.title())

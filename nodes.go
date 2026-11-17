@@ -25,6 +25,7 @@ type node struct {
 
 	relPath  string // sanitised path from the link root, '/'-separated ("" for the root)
 	origPath string // same, with original names, for matching -p arguments
+	renamed  string // why name differs from origName ("" if it doesn't)
 }
 
 // tree is a resolved link: what to download and where it belongs.
@@ -59,7 +60,7 @@ func resolve(ctx context.Context, api *apiClient, l *megaLink) (*tree, error) {
 		if n.origName, err = decryptName(fk.aes[:], fi.Attr); err != nil {
 			return nil, wrongKey(err)
 		}
-		n.name = sanitizeName(n.origName)
+		n.name, n.renamed = sanitize(n.origName)
 		n.relPath, n.origPath = n.name, n.origName
 		debugf("resolve: file %s %q, %d bytes", l.id, n.origName, n.size)
 		return &tree{link: l, root: n, files: []*node{n}}, nil
@@ -139,7 +140,7 @@ func resolve(ctx context.Context, api *apiClient, l *megaLink) (*tree, error) {
 	root.parent = nil // a subfolder link starts its own tree
 
 	t := &tree{link: l, folder: l.id, root: root}
-	root.name = sanitizeName(root.origName)
+	root.name, root.renamed = sanitize(root.origName)
 	if !root.isDir {
 		root.relPath, root.origPath = root.name, root.origName
 		t.files = []*node{root}
@@ -227,8 +228,9 @@ func finishTree(dir *node, files *[]*node) {
 	// MEGA allows siblings with identical names; the filesystem does not (and on
 	// Windows/macOS, names differing only in case collide too).
 	seen := map[string]int{}
+	firstOrig := map[string]string{}
 	for _, c := range dir.children {
-		name := sanitizeName(c.origName)
+		name, why := sanitize(c.origName)
 		k := strings.ToLower(name)
 		if n := seen[k]; n > 0 {
 			ext := ""
@@ -236,10 +238,16 @@ func finishTree(dir *node, files *[]*node) {
 				ext = path.Ext(name)
 			}
 			name = fmt.Sprintf("%s (%d)%s", strings.TrimSuffix(name, ext), n+1, ext)
-			debugf("resolve: duplicate name %q, saving as %q", c.origName, name)
+			dup := "another item in this folder has the same name"
+			if firstOrig[k] != c.origName {
+				dup = "another item in this folder has the same name, ignoring case"
+			}
+			why = joinReasons(why, dup)
+		} else {
+			firstOrig[k] = c.origName
 		}
 		seen[k]++
-		c.name = name
+		c.name, c.renamed = name, why
 		c.relPath = joinRel(dir.relPath, c.name)
 		c.origPath = joinRel(dir.origPath, c.origName)
 		if c.isDir {
@@ -257,35 +265,102 @@ func joinRel(dir, name string) string {
 	return dir + "/" + name
 }
 
-// sanitizeName makes a MEGA name safe to use as a single path component: no
-// separators, no control characters, never "." or "..", and on Windows none of the
-// reserved characters or device names.
+// sanitizeName makes a MEGA name safe to use as a single path component.
 func sanitizeName(s string) string {
+	out, _ := sanitize(s)
+	return out
+}
+
+// sanitize makes a MEGA name safe to use as a single path component — no
+// separators, no control characters, never "." or "..", and on Windows none of the
+// reserved characters or device names — and says why it changed it ("" if not).
+func sanitize(s string) (string, string) {
+	var why []string
 	var b strings.Builder
+	var sep, ctrl, winChar bool
 	for _, r := range s {
 		switch {
-		case r == '/' || r == '\\' || r < 0x20 || r == 0x7f:
+		case r == '/' || r == '\\':
 			b.WriteRune('_')
+			sep = true
+		case r < 0x20 || r == 0x7f:
+			b.WriteRune('_')
+			ctrl = true
 		case runtime.GOOS == "windows" && strings.ContainsRune(`<>:"|?*`, r):
 			b.WriteRune('_')
+			winChar = true
 		default:
 			b.WriteRune(r)
 		}
 	}
+	if sep {
+		why = append(why, "contains a path separator")
+	}
+	if ctrl {
+		why = append(why, "contains control characters")
+	}
+	if winChar {
+		why = append(why, `contains characters Windows doesn't allow (<>:"|?*)`)
+	}
 	out := b.String()
 	if runtime.GOOS == "windows" {
-		out = strings.TrimRight(out, ". ")
+		if t := strings.TrimRight(out, ". "); t != out {
+			out = t
+			why = append(why, "ends in a dot or space, which Windows doesn't allow")
+		}
 		base := strings.ToUpper(strings.SplitN(out, ".", 2)[0])
 		switch base {
 		case "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6",
 			"COM7", "COM8", "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9":
 			out = "_" + out
+			why = append(why, base+" is a reserved name on Windows")
 		}
 	}
 	if out == "" || out == "." || out == ".." {
+		if s == "" {
+			why = append(why, "the name is empty")
+		} else if len(why) == 0 {
+			why = append(why, `"." and ".." can't be used as names`)
+		}
 		out = "_" + out
 	}
-	return out
+	return out, strings.Join(why, "; ")
+}
+
+func joinReasons(a, b string) string {
+	if a == "" {
+		return b
+	}
+	return a + "; " + b
+}
+
+// renameNotes describes every renamed item among the given files and the folders
+// leading to them (the root included), in tree order, one line each.
+func renameNotes(t *tree, files []*node) []string {
+	seen := map[*node]bool{}
+	var notes []string
+	add := func(n *node) {
+		if n.renamed == "" || seen[n] {
+			return
+		}
+		seen[n] = true
+		orig := n.origPath
+		if n == t.root {
+			orig = n.origName
+		}
+		notes = append(notes, fmt.Sprintf("renamed   %s → %s  (%s)", orig, n.name, n.renamed))
+	}
+	add(t.root)
+	for _, f := range files {
+		var chain []*node
+		for p := f; p != nil && p != t.root; p = p.parent {
+			chain = append(chain, p)
+		}
+		for i := len(chain) - 1; i >= 0; i-- {
+			add(chain[i])
+		}
+	}
+	return notes
 }
 
 // localPath is where a file belongs on disk under the output directory. A folder
