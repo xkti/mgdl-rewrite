@@ -310,3 +310,46 @@ func TestPathAppliesToEveryLink(t *testing.T) {
 		t.Fatalf("single file link: %v", err)
 	}
 }
+
+// A different file already at the final name is never deleted: the download goes
+// beside it with its handle added, and the next run finds it there.
+func TestFileInTheWayIsKept(t *testing.T) {
+	m := newFakeMega(t)
+	f := m.addFile("FiLeAaAa", "x.bin", 300, 21, false)
+	out := t.TempDir()
+	theirs := []byte("someone else's file")
+	if err := os.WriteFile(filepath.Join(out, "x.bin"), theirs, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg := m.config(out)
+	if st, err := m.run(context.Background(), cfg, m.fileLink(f)); err != nil || st.completed != 1 {
+		t.Fatalf("%+v %v", st, err)
+	}
+	mustEqualFile(t, filepath.Join(out, "x.bin"), theirs)
+	mustEqualFile(t, filepath.Join(out, "x_FiLeAaAa.bin"), f.plain)
+
+	before := m.requests.Load()
+	if st, err := m.run(context.Background(), cfg, m.fileLink(f)); err != nil || st.skipped != 1 || m.requests.Load() != before {
+		t.Fatalf("second run: %+v %v, %d new requests", st, err, m.requests.Load()-before)
+	}
+
+	// With the other file gone, the copy saved beside it still counts.
+	os.Remove(filepath.Join(out, "x.bin"))
+	if st, err := m.run(context.Background(), cfg, m.fileLink(f)); err != nil || st.skipped != 1 || fileExists(filepath.Join(out, "x.bin")) {
+		t.Fatalf("third run: %+v %v", st, err)
+	}
+}
+
+// A folder where a file should go is left alone too.
+func TestFolderInTheWayIsKept(t *testing.T) {
+	m := newFakeMega(t)
+	f := m.addFile("FiLeAaAa", "x.bin", 300, 22, false)
+	out := t.TempDir()
+	if err := os.Mkdir(filepath.Join(out, "x.bin"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.run(context.Background(), m.config(out), m.fileLink(f)); err != nil {
+		t.Fatal(err)
+	}
+	mustEqualFile(t, filepath.Join(out, "x_FiLeAaAa.bin"), f.plain)
+}

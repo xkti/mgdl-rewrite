@@ -126,21 +126,66 @@ const (
 	resSkipped
 )
 
+// maxPlaceTries bounds how many "_HANDLE" names finalPath tries.
+const maxPlaceTries = 3
+
+// finalPath is where a file goes. Normally that's localPath, but something else
+// may already be there: a folder, or a file of the wrong size. mgdl never leaves a
+// file of the wrong size under a final name, so that is someone else's file (often
+// another link's, when links are run in a different combination) and is never
+// deleted: this file goes beside it, with "_HANDLE" added. Of the candidate names,
+// the first that already holds this file (right size) or its partial download
+// wins, so a file saved beside another is found again on the next run; otherwise
+// the first that is free. blocker describes what is in the way of the usual name
+// (nil if nothing is).
+func finalPath(cfg *config, t *tree, n *node) (path string, blocker os.FileInfo, err error) {
+	p := t.localPath(cfg.output, n)
+	free := ""
+	for range maxPlaceTries {
+		fi, err := os.Stat(p)
+		switch {
+		case err == nil && !fi.IsDir() && fi.Size() == n.size, fileExists(p + ".part"):
+			return p, blocker, nil
+		case err != nil && free == "":
+			free = p
+		case err == nil && blocker == nil:
+			blocker = fi
+		}
+		p = filepath.Join(filepath.Dir(p), withHandle(filepath.Base(p), n.handle, false))
+	}
+	if free == "" {
+		return "", blocker, fmt.Errorf("%s and %d name(s) with its handle added are all taken by other files",
+			t.localPath(cfg.output, n), maxPlaceTries-1)
+	}
+	return free, blocker, nil
+}
+
 // fetchFile brings one file to completion: skip it if already present, otherwise
 // download (resuming if possible), verify, and rename into place.
 func (e *engine) fetchFile(ctx context.Context, lk *linkRun, n *node, row *slot) (fileResult, error) {
-	final := lk.tree.localPath(e.cfg.output, n)
-	j := &job{e: e, lk: lk, n: n, final: final, part: final + ".part", row: row, shown: displayPath(lk, n, e.multi)}
+	shown := displayPath(lk, n, e.multi)
+	final, blocker, err := finalPath(e.cfg, lk.tree, n)
+	if err != nil {
+		return 0, &localError{err}
+	}
+	beside := ""
+	if blocker != nil {
+		what := fmt.Sprintf("a different file is already there (%s, expected %s)", formatBytes(blocker.Size()), formatBytes(n.size))
+		if blocker.IsDir() {
+			what = "a folder is already there"
+		}
+		renamed := filepath.Base(final)
+		beside = fmt.Sprintf("%s: %s, saving this one as %s", shown, what, renamed)
+		if i := strings.LastIndex(shown, "/"); i >= 0 {
+			shown = shown[:i+1] + renamed
+		} else {
+			shown = renamed
+		}
+	}
+	j := &job{e: e, lk: lk, n: n, final: final, part: final + ".part", row: row, shown: shown}
 
-	if fi, err := os.Stat(final); err == nil {
+	if _, err := os.Stat(final); err == nil {
 		switch {
-		case fi.IsDir():
-			return 0, fmt.Errorf("%s exists and is a directory", final)
-		case fi.Size() != n.size:
-			warnf("%s exists but is %s, expected %s — downloading again", j.shown, formatBytes(fi.Size()), formatBytes(n.size))
-			if err := os.Remove(final); err != nil {
-				return 0, err
-			}
 		case e.cfg.verifyExisting && e.cfg.verify && n.size > 0:
 			ok, err := j.verifyOnDisk(ctx, final)
 			if err != nil {
@@ -161,11 +206,14 @@ func (e *engine) fetchFile(ctx context.Context, lk *linkRun, n *node, row *slot)
 			return resSkipped, nil
 		}
 	}
+	if beside != "" {
+		noticef("%s", beside) // only once there's something to save
+	}
 
 	if err := os.MkdirAll(filepath.Dir(final), 0o755); err != nil {
 		return 0, err
 	}
-	if err := j.lk.space.claim(j, fileNeed(e.cfg, j.lk.tree, j.lk.ctl, n)); err != nil {
+	if err := j.lk.space.claim(j, fileNeedAt(final, j.lk.ctl, n)); err != nil {
 		return 0, err
 	}
 	defer j.lk.space.release(j)
@@ -748,7 +796,11 @@ func checkModes(cfg *config, t *tree, ctl *controlFile, files []*node) error {
 		if st == nil || st.Mode != modeParallel || st.doneBytes() == 0 {
 			continue
 		}
-		if _, err := os.Stat(t.localPath(cfg.output, n) + ".part"); errors.Is(err, fs.ErrNotExist) {
+		final, _, err := finalPath(cfg, t, n)
+		if err != nil {
+			continue // reported when the file comes up
+		}
+		if _, err := os.Stat(final + ".part"); errors.Is(err, fs.ErrNotExist) {
 			continue
 		}
 		bad = append(bad, n.relPath)

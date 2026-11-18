@@ -85,6 +85,11 @@ Tests are hermetic (`e2e_test.go` runs a fake API + storage + proxy with
 - **Final name means verified.** Data goes to `NAME.part`; rename only after the
   MAC matches (or verification is off). Mismatch → delete + redownload, bounded by
   `-r` (3 when `-r 0`).
+- **Never delete a file mgdl didn't write.** A folder or wrong-size file at the
+  final name can't be this file's finished download, so it's left alone and the
+  file goes beside it as `NAME_HANDLE` (`finalPath`, notice on stderr). The first
+  candidate already holding the file or its `.part` wins, so it's found again on
+  later runs. Only `--verify-existing` deletes a final-name file (on a failed check).
 - **Free space is checked, sparse files are used** (`space.go`, `disk_*.go`). Up
   front: the selection's remaining need (`fileNeed`: 0 if complete, size − done if
   resumable) plus headroom (1 MiB + 0.5%) must fit, summed over all links landing on

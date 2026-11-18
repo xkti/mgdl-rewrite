@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
@@ -126,16 +127,15 @@ func dryRun(cfg *config, t *tree, ctl *controlFile, files []*node, space *spaceR
 		nameW = max(nameW, min(len([]rune(n.relPath)), 50))
 	}
 	for _, n := range files {
-		final := t.localPath(cfg.output, n)
+		final, blocker, err := finalPath(cfg, t, n)
 		var what string
-		if fi, err := os.Stat(final); err == nil && fi.Size() == n.size {
+		if err != nil {
+			what = "can't be saved: " + err.Error()
+		} else if _, err := os.Stat(final); err == nil {
 			what = "skip (already complete)"
 			if cfg.verifyExisting && cfg.verify {
 				what = "verify existing file"
 			}
-		} else if err == nil {
-			what = fmt.Sprintf("re-download (local size %s is wrong)", formatBytes(fi.Size()))
-			remain += n.size
 		} else if st := ctl.get(n.handle); st != nil && st.Size == n.size && fileExists(final+".part") {
 			have := st.doneBytes()
 			what = fmt.Sprintf("resume from %s (%d%%, %s)", formatBytes(have), pct(have, n.size), st.Mode)
@@ -147,6 +147,9 @@ func dryRun(cfg *config, t *tree, ctl *controlFile, files []*node, space *spaceR
 			chunks := len(planChunks(n.size, cfg.chunkSize))
 			what = fmt.Sprintf("download %s in %d chunk(s)", formatBytes(n.size), chunks)
 			remain += n.size
+		}
+		if blocker != nil && err == nil {
+			what += fmt.Sprintf(", saved as %s (a different file has its name)", filepath.Base(final))
 		}
 		fmt.Printf("  %-*s  %s\n", nameW, truncate(n.relPath, 50), what)
 	}

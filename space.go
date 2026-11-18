@@ -53,7 +53,15 @@ func existingDir(dir string) string {
 
 // fileNeed is how many bytes a file still has to put on disk.
 func fileNeed(cfg *config, t *tree, ctl *controlFile, n *node) int64 {
-	final := t.localPath(cfg.output, n)
+	final, _, err := finalPath(cfg, t, n)
+	if err != nil {
+		return 0 // can't be placed; it fails when it comes up, writing nothing
+	}
+	return fileNeedAt(final, ctl, n)
+}
+
+// fileNeedAt is fileNeed for a file going to final.
+func fileNeedAt(final string, ctl *controlFile, n *node) int64 {
 	if fi, err := os.Stat(final); err == nil && !fi.IsDir() && fi.Size() == n.size {
 		return 0 // complete (a failed --verify-existing deletes it first, so still 0 net)
 	}

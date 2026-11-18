@@ -87,6 +87,9 @@ Interrupted? Run the same command again and it picks up where it stopped.
 - **Names** that can't be used as-is (Windows-reserved names like `CON`, path
   separators, duplicates within a folder) are changed, and each change is reported
   on stderr, e.g. `renamed   CON.txt → _CON.txt  (CON is a reserved name on Windows)`.
+  mgdl never deletes a file it didn't write: if a different file (wrong size) or a
+  folder is already where a download should go, it is left alone and the download
+  is saved beside it with `_HANDLE` added.
 - **Output**: a live dashboard on a terminal; plain timestamped status lines every
   10s when stdout is piped or redirected. A finished download prints `done`: green
   if it was verified, yellow if it couldn't be (part of it was downloaded with
