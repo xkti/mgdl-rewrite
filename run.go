@@ -228,7 +228,13 @@ func planLinks(ctx context.Context, cfg *config, api *apiClient) (runs []*linkRu
 			continue
 		}
 		if cfg.dryRun {
-			dryRun(cfg, t, lr.ctl, lr.files, checkLinkSpace(cfg, t, lr.ctl, lr.files))
+			// With several links, space is reported once for all of them, below.
+			var space *spaceReport
+			if total == 1 && !cfg.noSpaceCheck {
+				r := checkLinkSpace(cfg, t, lr.ctl, lr.files)
+				space = &r
+			}
+			dryRun(cfg, t, lr.ctl, lr.files, space)
 			continue
 		}
 		if err := checkModes(cfg, t, lr.ctl, lr.files); err != nil {
@@ -236,7 +242,11 @@ func planLinks(ctx context.Context, cfg *config, api *apiClient) (runs []*linkRu
 			linkError(lr, total, err)
 		}
 	}
-	if !cfg.list && !cfg.dryRun && !cfg.noSpaceCheck {
+	switch {
+	case cfg.list || cfg.noSpaceCheck:
+	case cfg.dryRun && total > 1:
+		dryRunSpace(cfg, runs)
+	case !cfg.dryRun:
 		checkSpace(cfg, runs, total)
 	}
 	return runs, false
@@ -352,33 +362,39 @@ func resolveOne(ctx context.Context, api *apiClient, lr *linkRun) {
 	}
 }
 
-// checkSpace is the up-front free-space check for the whole run. Links are grouped
-// by the filesystem directory they land in; if a group's combined need doesn't fit,
-// none of its links start.
-func checkSpace(cfg *config, runs []*linkRun, total int) {
-	type group struct {
-		report spaceReport
-		runs   []*linkRun
-	}
-	var order []string
-	groups := map[string]*group{}
+// spaceGroup is the links whose files land on one filesystem directory, with
+// their combined need.
+type spaceGroup struct {
+	report spaceReport
+	runs   []*linkRun
+}
+
+// spaceGroups groups the queued links by the directory they land in.
+func spaceGroups(cfg *config, runs []*linkRun) []*spaceGroup {
+	var groups []*spaceGroup
+	byDir := map[string]*spaceGroup{}
 	for _, lr := range runs {
 		if lr.status != statusQueued || lr.files == nil {
 			continue
 		}
 		r := checkLinkSpace(cfg, lr.tree, lr.ctl, lr.files)
-		g := groups[r.dir]
+		g := byDir[r.dir]
 		if g == nil {
-			g = &group{report: r}
-			groups[r.dir] = g
-			order = append(order, r.dir)
+			g = &spaceGroup{report: r}
+			byDir[r.dir] = g
+			groups = append(groups, g)
 		} else {
 			g.report.need += r.need
 		}
 		g.runs = append(g.runs, lr)
 	}
-	for _, dir := range order {
-		g := groups[dir]
+	return groups
+}
+
+// checkSpace is the up-front free-space check for the whole run: if a group's
+// combined need doesn't fit, none of its links start.
+func checkSpace(cfg *config, runs []*linkRun, total int) {
+	for _, g := range spaceGroups(cfg, runs) {
 		r := g.report
 		switch {
 		case r.err != nil:
@@ -400,6 +416,26 @@ func checkSpace(cfg *config, runs []*linkRun, total int) {
 				lr.space = guard
 			}
 		}
+	}
+}
+
+// dryRunSpace closes a dry run of several links with what they need together,
+// checked the way a real run would.
+func dryRunSpace(cfg *config, runs []*linkRun) {
+	groups := spaceGroups(cfg, runs)
+	if len(groups) == 0 {
+		return
+	}
+	files, links := 0, 0
+	for _, g := range groups {
+		links += len(g.runs)
+		for _, lr := range g.runs {
+			files += len(lr.files)
+		}
+	}
+	fmt.Printf("\nAll links: %d file(s) from %d link(s)\n", files, links)
+	for _, g := range groups {
+		printSpace(g.report, fmt.Sprintf("a real run wouldn't start %d link(s)", len(g.runs)))
 	}
 }
 

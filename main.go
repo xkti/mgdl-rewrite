@@ -103,7 +103,9 @@ func cli(argv []string) int {
 }
 
 // dryRun reports what a download would do, without transferring or writing anything.
-func dryRun(cfg *config, t *tree, ctl *controlFile, files []*node, space spaceReport) {
+// space is nil when it isn't to be reported here (--no-space-check, or several
+// links, which dryRunSpace reports together).
+func dryRun(cfg *config, t *tree, ctl *controlFile, files []*node, space *spaceReport) {
 	fmt.Printf("%s\n", t.title())
 	fmt.Printf("  output:  %s\n", t.baseDir(cfg.output))
 	fmt.Printf("  control: %s\n", ctl.path)
@@ -149,15 +151,22 @@ func dryRun(cfg *config, t *tree, ctl *controlFile, files []*node, space spaceRe
 		fmt.Printf("  %-*s  %s\n", nameW, truncate(n.relPath, 50), what)
 	}
 	fmt.Printf("\n%d file(s) selected, %s to transfer\n", len(files), formatBytes(remain))
+	if space != nil {
+		printSpace(*space, "a real run would stop here")
+	}
+}
+
+// printSpace is the dry run's free-space line; short says what a real run would do
+// if the space isn't there.
+func printSpace(r spaceReport, short string) {
 	switch {
-	case cfg.noSpaceCheck:
-	case space.err != nil:
-		fmt.Printf("free space in %s is unknown (%v)\n", space.dir, space.err)
-	case space.short():
-		fmt.Printf("%s\n", colour("31", fmt.Sprintf("NOT ENOUGH SPACE: %s needed on disk, %s free in %s — a real run would stop here",
-			formatBytes(space.need+spaceMargin(space.need)), formatBytes(space.free), space.dir)))
+	case r.err != nil:
+		fmt.Printf("free space in %s is unknown (%v)\n", r.dir, r.err)
+	case r.short():
+		fmt.Printf("%s\n", colour("31", fmt.Sprintf("NOT ENOUGH SPACE: %s needed on disk, %s free in %s — %s",
+			formatBytes(r.need+spaceMargin(r.need)), formatBytes(r.free), r.dir, short)))
 	default:
-		fmt.Printf("%s needed on disk, %s free in %s\n", formatBytes(space.need), formatBytes(space.free), space.dir)
+		fmt.Printf("%s needed on disk, %s free in %s\n", formatBytes(r.need), formatBytes(r.free), r.dir)
 	}
 }
 

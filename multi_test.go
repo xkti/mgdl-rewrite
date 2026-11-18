@@ -3,6 +3,8 @@ package main
 import (
 	"context"
 	"errors"
+	"io"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -217,4 +219,45 @@ func TestMergeTreesClashes(t *testing.T) {
 	if child(t1.root, "x").name != "x" || t2.root.name != "set" {
 		t.Fatal("the earlier link's names changed")
 	}
+}
+
+// A dry run of several links reports space once, for all of them together, and
+// writes nothing.
+func TestDryRunSpaceForAllLinks(t *testing.T) {
+	m := newFakeMega(t)
+	a := m.addFile("FiLeAaAa", "a.bin", 3<<20, 14, false)
+	b := m.addFile("FiLeBbBb", "b.bin", 3<<20, 15, false)
+	fakeFree(t, fixedFree(5<<20)) // enough for either, not both
+	out := t.TempDir()
+	cfg := m.config(out)
+	cfg.dryRun = true
+	stdout := captureStdout(t, func() {
+		if _, _, err := m.runAll(context.Background(), cfg, m.fileLink(a), m.fileLink(b)); err != nil {
+			t.Fatal(err)
+		}
+	})
+	if strings.Count(stdout, "NOT ENOUGH SPACE") != 1 || !strings.Contains(stdout, "a real run wouldn't start 2 link(s)") ||
+		!strings.Contains(stdout, "All links: 2 file(s) from 2 link(s)") {
+		t.Fatalf("output:\n%s", stdout)
+	}
+	if m.requests.Load() != 0 || fileExists(filepath.Join(out, ".mgdl-FiLeAaAa")) {
+		t.Fatal("a dry run transferred or wrote something")
+	}
+}
+
+// captureStdout runs fn with stdout going to a pipe, and returns what it printed.
+func captureStdout(t *testing.T, fn func()) string {
+	t.Helper()
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	old := os.Stdout
+	os.Stdout = w
+	got := make(chan []byte)
+	go func() { b, _ := io.ReadAll(r); got <- b }()
+	defer func() { os.Stdout = old }()
+	fn()
+	w.Close()
+	return string(<-got)
 }
