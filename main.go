@@ -78,6 +78,9 @@ func cli(argv []string) int {
 	dl := newDownloadHTTPClient()
 
 	st, runs, err := runLinks(ctx, cfg, api, dl)
+	if errors.Is(err, errSelectCancelled) {
+		return 0 // the picker said so; there is nothing to report
+	}
 	if len(runs) > 1 && !cfg.list && !cfg.dryRun {
 		fmt.Println()
 		for _, line := range linkReport(runs) {

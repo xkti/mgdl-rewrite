@@ -117,6 +117,15 @@ func TestRepeatedAndBrokenLinks(t *testing.T) {
 	if !strings.Contains(report[1], "a.bin (2 links)") || !strings.Contains(report[1], "1 done, 1 skipped") {
 		t.Fatalf("report line %q", report[1])
 	}
+	// A reason shared by every link in a group is shown; mixed ones aren't.
+	same := []*linkRun{{status: statusSkipped, note: "selection cancelled"}, {status: statusSkipped, note: "selection cancelled"}}
+	if got := groupOutcome(same); got != "skipped (selection cancelled)" {
+		t.Fatalf("shared reason: %q", got)
+	}
+	same[1].note = "nothing selected"
+	if got := groupOutcome(same); got != "skipped" {
+		t.Fatalf("mixed reasons: %q", got)
+	}
 	if !strings.Contains(report[2], "link 3") || !strings.Contains(report[2], "couldn't be opened: ") {
 		t.Fatalf("report line %q", report[2])
 	}

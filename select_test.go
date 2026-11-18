@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -149,7 +150,7 @@ func TestPickAcrossLinks(t *testing.T) {
 	runPickerFn = func(context.Context, *selector, <-chan *linkRun, func(*linkRun)) (pickerEvent, error) {
 		return pickerCancelled, nil
 	}
-	if _, runs, err = m.runAll(context.Background(), cfg, l1, m.fileLink(c)); err != nil || runs[0].status != statusSkipped {
+	if _, runs, err = m.runAll(context.Background(), cfg, l1, m.fileLink(c)); !errors.Is(err, errSelectCancelled) || runs[0].status != statusSkipped {
 		t.Fatalf("cancel: %v, %v", err, runs[0].status)
 	}
 }

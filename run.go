@@ -89,9 +89,13 @@ func linkError(lr *linkRun, total int, err error) {
 }
 
 // runLinks plans and downloads every link in cfg.links. The error is
-// context.Canceled after Ctrl+C, otherwise all links' errors joined (nil if none).
+// context.Canceled after Ctrl+C, errSelectCancelled if the picker was cancelled,
+// otherwise all links' errors joined (nil if none).
 func runLinks(ctx context.Context, cfg *config, api *apiClient, hc *http.Client) (runStats, []*linkRun, error) {
-	runs := planLinks(ctx, cfg, api)
+	runs, cancelled := planLinks(ctx, cfg, api)
+	if cancelled {
+		return runStats{}, runs, errSelectCancelled
+	}
 	var queued []*linkRun
 	for _, lr := range runs {
 		if lr.status == statusQueued {
@@ -121,9 +125,10 @@ func runLinks(ctx context.Context, cfg *config, api *apiClient, hc *http.Client)
 
 // planLinks is phase 1. Links that can't go ahead are marked and reported; the
 // rest come back as statusQueued, with files selected and space checked.
-func planLinks(ctx context.Context, cfg *config, api *apiClient) []*linkRun {
+// cancelled reports that the user cancelled the picker.
+func planLinks(ctx context.Context, cfg *config, api *apiClient) (runs []*linkRun, cancelled bool) {
 	total := len(cfg.links)
-	runs := make([]*linkRun, total)
+	runs = make([]*linkRun, total)
 	for i, raw := range cfg.links {
 		runs[i] = &linkRun{idx: i + 1, raw: raw}
 	}
@@ -176,14 +181,12 @@ func planLinks(ctx context.Context, cfg *config, api *apiClient) []*linkRun {
 	}
 
 	if picking {
-		if !pick(ctx, runs, arrivals, accept, stopResolving) {
-			for _, f := range held {
-				f()
-			}
-			return runs
-		}
+		goOn, cancelled := pick(ctx, runs, arrivals, accept, stopResolving)
 		for _, f := range held {
 			f()
+		}
+		if !goOn {
+			return runs, cancelled
 		}
 	} else {
 		for lr := range arrivals {
@@ -236,7 +239,7 @@ func planLinks(ctx context.Context, cfg *config, api *apiClient) []*linkRun {
 	if !cfg.list && !cfg.dryRun && !cfg.noSpaceCheck {
 		checkSpace(cfg, runs, total)
 	}
-	return runs
+	return runs, false
 }
 
 // runPickerFn is the interactive picker; a variable so tests can play the user.
@@ -245,8 +248,8 @@ var runPickerFn = runPicker
 // pick runs the --select picker while links arrive, then narrows each link's files
 // to the choice. Links still loading when the picker closes are skipped. It
 // reports whether planning should go on (false: cancelled, interrupted, or the
-// terminal couldn't be used).
-func pick(ctx context.Context, runs []*linkRun, arrivals <-chan *linkRun, accept func(*linkRun), stopResolving func()) bool {
+// terminal couldn't be used), and whether the user cancelled.
+func pick(ctx context.Context, runs []*linkRun, arrivals <-chan *linkRun, accept func(*linkRun), stopResolving func()) (goOn, cancelled bool) {
 	s := newSelector(len(runs))
 	arrived := map[*linkRun]bool{}
 	ev, err := runPickerFn(ctx, s, arrivals, func(lr *linkRun) {
@@ -284,15 +287,15 @@ func pick(ctx context.Context, runs []*linkRun, arrivals <-chan *linkRun, accept
 	}
 	switch {
 	case interrupted:
-		return false
+		return false, false
 	case err != nil:
 		fmt.Fprintf(os.Stderr, "mgdl: %v\n", err)
-		return false
+		return false, false
 	case ev == pickerCancelled:
 		infof("selection cancelled, nothing downloaded")
-		return false
+		return false, true
 	}
-	return true
+	return true, false
 }
 
 // resolveInOrder resolves links a few at a time and delivers each, in order, once
@@ -626,12 +629,19 @@ func groupOutcome(runs []*linkRun) string {
 		}
 		word = fmt.Sprintf("%d of %d files failed", failed, files)
 	case statusSkipped, statusNotStarted, statusFailed:
+		// The reason, if every link in the group shares it.
+		note := runs[0].note
+		for _, lr := range runs {
+			if lr.note != note {
+				note = ""
+			}
+		}
 		switch {
-		case len(runs) > 1 || runs[0].note == "":
+		case note == "":
 		case first == statusSkipped:
-			word = fmt.Sprintf("%s (%s)", word, runs[0].note)
+			word = fmt.Sprintf("%s (%s)", word, note)
 		default:
-			word += ": " + runs[0].note
+			word += ": " + note
 		}
 	}
 	return colourStatus(first, word)
