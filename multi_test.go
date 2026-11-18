@@ -261,3 +261,52 @@ func captureStdout(t *testing.T, fn func()) string {
 	w.Close()
 	return string(<-got)
 }
+
+// -p applies to every link: each takes what matches in its own folder, a link
+// where nothing matches is skipped, and a -p that matches nowhere stops the run.
+func TestPathAppliesToEveryLink(t *testing.T) {
+	m := newFakeMega(t)
+	a1 := m.addFile("FiLeA1a1", "a.txt", 100, 16, false)
+	s1 := m.addFile("FiLeS1s1", "s1.bin", 200, 17, false)
+	a2 := m.addFile("FiLeA2a2", "other.txt", 100, 18, false)
+	s2 := m.addFile("FiLeS2s2", "s2.bin", 200, 19, false)
+	lone := m.addFile("FiLeLlLl", "lone.bin", 50, 20, false)
+	l1 := m.publishFolder("Part 1", []*fakeFile{a1}, []*fakeFile{s1})
+	l2 := m.publishShare("ShArE002", "RoOt0002", "SuBd0002", "Part 2", []*fakeFile{a2}, []*fakeFile{s2})
+	out := t.TempDir()
+	cfg := m.config(out)
+	cfg.paths = []string{"sub", "a.txt"} // a.txt is only in part 1
+
+	st, runs, err := m.runAll(context.Background(), cfg, l1, l2, m.fileLink(lone))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.completed != 3 || runs[2].status != statusSkipped || runs[2].note != "nothing matches --path" {
+		t.Fatalf("stats %+v, file link %v %q", st, runs[2].status, runs[2].note)
+	}
+	mustEqualFile(t, filepath.Join(out, "Part 1", "a.txt"), a1.plain)
+	mustEqualFile(t, filepath.Join(out, "Part 1", "sub", "s1.bin"), s1.plain)
+	mustEqualFile(t, filepath.Join(out, "Part 2", "sub", "s2.bin"), s2.plain)
+	if fileExists(filepath.Join(out, "Part 2", "other.txt")) || fileExists(filepath.Join(out, "lone.bin")) {
+		t.Fatal("an unmatched file was downloaded")
+	}
+
+	cfg.paths = []string{"sub", "typo"}
+	_, runs, err = m.runAll(context.Background(), cfg, l1, l2)
+	if err == nil || !strings.Contains(err.Error(), `--path "typo" matches nothing in any link`) {
+		t.Fatalf("err %v", err)
+	}
+	if runs[0].status != statusNotStarted || runs[1].status != statusNotStarted {
+		t.Fatalf("statuses %v %v", runs[0].status, runs[1].status)
+	}
+
+	// A single link keeps its own wording.
+	_, _, err = m.runAll(context.Background(), cfg, l1)
+	if err == nil || !strings.Contains(err.Error(), `--path "typo" matches nothing in "Part 1"`) {
+		t.Fatalf("single link: %v", err)
+	}
+	cfg.paths = []string{"x"}
+	if _, _, err = m.runAll(context.Background(), cfg, m.fileLink(lone)); err == nil || !strings.Contains(err.Error(), "only applies to folder links") {
+		t.Fatalf("single file link: %v", err)
+	}
+}

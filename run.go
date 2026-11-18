@@ -45,6 +45,8 @@ type linkRun struct {
 	files []*node     // selected
 	space *spaceGuard // nil with --no-space-check, or when free space is unknown
 
+	matched bool // the link was opened and -p applied to it
+
 	status linkStatus
 	note   string // short reason for skipped/not started/failed
 	err    error  // the full error, if any
@@ -151,6 +153,7 @@ func planLinks(ctx context.Context, cfg *config, api *apiClient) (runs []*linkRu
 	arrivals := resolveInOrder(resCtx, api, runs)
 	merger := newNameMerger()
 	seen := map[string]*linkRun{}
+	pathHit := make([]bool, len(cfg.paths)) // each -p matched in at least one link
 	accept := func(lr *linkRun) {
 		switch lr.status {
 		case statusInterrupted:
@@ -171,13 +174,18 @@ func planLinks(ctx context.Context, cfg *config, api *apiClient) (runs []*linkRu
 		seen[lr.link.handle()] = lr
 		lr.tree.showRoot = total > 1
 		merger.add(lr.tree)
-		files, err := lr.tree.selectPaths(cfg.paths)
-		if err != nil {
+		if len(cfg.paths) > 0 && !lr.tree.root.isDir && total == 1 {
+			err := errors.New("--path only applies to folder links")
 			lr.stop(statusFailed, err)
 			say(func() { linkError(lr, total, err) })
 			return
 		}
+		files, hit := lr.tree.matchPaths(cfg.paths)
+		for i, h := range hit {
+			pathHit[i] = pathHit[i] || h
+		}
 		lr.files = files
+		lr.matched = true
 	}
 
 	if picking {
@@ -188,9 +196,23 @@ func planLinks(ctx context.Context, cfg *config, api *apiClient) (runs []*linkRu
 		if !goOn {
 			return runs, cancelled
 		}
+		// -p only preselected; what the user then chose stands.
+		if err := unmatchedPaths(cfg.paths, pathHit, runs); err != nil {
+			warnf("%v", err)
+		}
 	} else {
 		for lr := range arrivals {
 			accept(lr)
+		}
+		// A -p that matches nothing anywhere is most likely a typo: stop.
+		if err := unmatchedPaths(cfg.paths, pathHit, runs); err != nil {
+			fmt.Fprintf(os.Stderr, "mgdl: %v\n", err)
+			for _, lr := range runs {
+				if lr.status == statusQueued {
+					lr.stop(statusNotStarted, err)
+				}
+			}
+			return runs, false
 		}
 	}
 
@@ -217,8 +239,11 @@ func planLinks(ctx context.Context, cfg *config, api *apiClient) (runs []*linkRu
 			noticef("%s", note)
 		}
 		if len(lr.files) == 0 {
-			infof("%s: nothing selected", t.title())
 			lr.status, lr.note = statusSkipped, "nothing selected"
+			if len(cfg.paths) > 0 && !cfg.selectTUI {
+				lr.note = "nothing matches --path"
+			}
+			infof("%s: %s", t.title(), lr.note)
 			continue
 		}
 		var err error
@@ -250,6 +275,32 @@ func planLinks(ctx context.Context, cfg *config, api *apiClient) (runs []*linkRu
 		checkSpace(cfg, runs, total)
 	}
 	return runs, false
+}
+
+// unmatchedPaths reports the -p entries that matched nothing in any link that
+// was opened (nil if all matched, or no link was opened to match them in).
+func unmatchedPaths(paths []string, hit []bool, runs []*linkRun) error {
+	var trees []*tree
+	for _, lr := range runs {
+		if lr.matched {
+			trees = append(trees, lr.tree)
+		}
+	}
+	var missing []string
+	for i, p := range paths {
+		if !hit[i] {
+			missing = append(missing, fmt.Sprintf("%q", p))
+		}
+	}
+	if len(missing) == 0 || len(trees) == 0 {
+		return nil
+	}
+	where := "any link"
+	if len(trees) == 1 {
+		where = fmt.Sprintf("%q", trees[0].title())
+	}
+	return fmt.Errorf("--path %s matches nothing in %s (paths are relative to each link's folder, see --list)",
+		strings.Join(missing, ", "), where)
 }
 
 // runPickerFn is the interactive picker; a variable so tests can play the user.

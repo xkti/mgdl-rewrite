@@ -196,9 +196,6 @@ func parseArgs(argv []string) (*config, error) {
 	if len(cfg.links) == 0 {
 		return nil, errNoLinks
 	}
-	if len(cfg.paths) > 0 && len(cfg.links) > 1 {
-		return nil, errors.New("--path can only be used with a single link")
-	}
 
 	cfg.proxies = splitProxies(proxies)
 	if len(cfg.proxies) == 0 {
@@ -284,7 +281,8 @@ Links:
 Selection:
   -l, --list              print the file tree with sizes and exit
   -p, --path PATH         download only this file or folder (relative to the link's
-                          folder, e.g. "Season 1/ep01.mkv"); repeatable
+                          folder, e.g. "Season 1/ep01.mkv"); repeatable; with
+                          several links, applies to each of them
   -s, --select            choose files from all links in one interactive tree
                           (-p entries preselected)
   -n, --dry-run           show what would be downloaded or resumed; transfer nothing

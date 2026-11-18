@@ -77,6 +77,9 @@ Tests are hermetic (`e2e_test.go` runs a fake API + storage + proxy with
   (`resolveInOrder`) but accepted (repeat check, `nameMerger.add`, selection)
   strictly in order on one goroutine — with `--select`, the picker's — so names
   never depend on load order and nothing on screen changes under the user.
+  `-p` applies to every link (`matchPaths`, in each link's own folder); a link with
+  no match is skipped, and an entry matching in no link stops the run before any
+  download (with `--select` it only preselects, so that's just a warning).
 - **One control file per link**, all mutation through `controlFile.update` (one
   mutex), saved atomically (tmp + rename) every 2s and on exit, removed when empty.
 - **Final name means verified.** Data goes to `NAME.part`; rename only after the

@@ -75,7 +75,6 @@ func TestParseArgsErrors(t *testing.T) {
 		{"-j", "0", testFileLink},
 		{"-C", "127M", testFileLink},
 		{"--bogus", testFileLink},
-		{"-p", "x", testFileLink, testFolderLink},
 		{"--list=yes", testFileLink},
 		{testFileLink, "-o"},
 	} {

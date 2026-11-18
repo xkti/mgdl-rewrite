@@ -40,7 +40,7 @@ Interrupted? Run the same command again and it picks up where it stopped.
 | `-r, --retries N` | `5` | Attempts per chunk; `0` = forever. Resets after real progress. |
 | `-x, --proxy LIST` | 4 built-in Workers | Comma-separated proxy domains, picked at random per request. |
 | `--direct` | off | Skip the proxy. |
-| `-p, --path PATH` | | File or folder to download, relative to the link's folder. Repeatable. |
+| `-p, --path PATH` | | File or folder to download, relative to the link's folder. Repeatable. With several links it applies to each; links with no match are skipped, and a path that matches in none of them stops the run. |
 | `-l, --list` | | Print the file tree with sizes, then exit. |
 | `-s, --select` | | Interactive file picker (`-p` entries come preselected). |
 | `-n, --dry-run` | | Report what would be downloaded/resumed/skipped. Writes nothing. |

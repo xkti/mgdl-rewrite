@@ -465,36 +465,29 @@ func (t *tree) baseDir(output string) string {
 	return output
 }
 
-// selectPaths narrows the files to those under any of the given paths. Paths are
-// relative to the link's root folder, use '/' separators, and match either a file or
-// a whole folder. Both the original MEGA names and the sanitised local names match.
-func (t *tree) selectPaths(paths []string) ([]*node, error) {
+// matchPaths narrows the files to those under any of the given paths (all files
+// if there are none), and says for each path whether it matched anything here.
+// Paths are relative to the link's root folder, use '/' separators, and match
+// either a file or a whole folder. Both the original MEGA names and the sanitised
+// local names match. A file link has no folder, so paths never match in it.
+func (t *tree) matchPaths(paths []string) ([]*node, []bool) {
 	if len(paths) == 0 {
 		return t.files, nil
 	}
+	hit := make([]bool, len(paths))
 	if !t.root.isDir {
-		return nil, fmt.Errorf("--path only applies to folder links")
+		return nil, hit
 	}
 	picked := map[*node]bool{}
-	for _, p := range paths {
+	for i, p := range paths {
 		want := strings.Trim(strings.ReplaceAll(p, "\\", "/"), "/")
-		if want == "" {
-			for _, f := range t.files {
-				picked[f] = true
-			}
-			continue
-		}
-		matched := false
 		for _, f := range t.files {
 			for _, have := range []string{f.origPath, f.relPath} {
-				if have == want || strings.HasPrefix(have, want+"/") {
+				if want == "" || have == want || strings.HasPrefix(have, want+"/") {
 					picked[f] = true
-					matched = true
+					hit[i] = true
 				}
 			}
-		}
-		if !matched {
-			return nil, fmt.Errorf("--path %q matches nothing in %q (paths are relative to the folder, see --list)", p, t.title())
 		}
 	}
 	var out []*node
@@ -503,7 +496,7 @@ func (t *tree) selectPaths(paths []string) ([]*node, error) {
 			out = append(out, f)
 		}
 	}
-	return out, nil
+	return out, hit
 }
 
 // printTree writes a `tree`-style listing with sizes.
