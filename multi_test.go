@@ -353,3 +353,35 @@ func TestFolderInTheWayIsKept(t *testing.T) {
 	}
 	mustEqualFile(t, filepath.Join(out, "x_FiLeAaAa.bin"), f.plain)
 }
+
+// A rate limit is noticed once per file, with its reason, without -v.
+func TestRateLimitNoticedOnce(t *testing.T) {
+	m := newFakeMega(t)
+	f := m.addFile("FiLeAaAa", "x.bin", 300, 23, false)
+	m.linkErrs = []int{-6, -6, -6} // the download-link request is throttled three times
+	stderr := captureStderr(t, func() {
+		if _, err := m.run(context.Background(), m.config(t.TempDir()), m.fileLink(f)); err != nil {
+			t.Fatal(err)
+		}
+	})
+	if n := strings.Count(stderr, "rate limited"); n != 1 || !strings.Contains(stderr, "x.bin: rate limited (API -6), waiting") {
+		t.Fatalf("%d notice(s):\n%s", n, stderr)
+	}
+}
+
+// captureStderr runs fn with stderr going to a pipe, and returns what it printed.
+func captureStderr(t *testing.T, fn func()) string {
+	t.Helper()
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	old := os.Stderr
+	os.Stderr = w
+	got := make(chan []byte)
+	go func() { b, _ := io.ReadAll(r); got <- b }()
+	defer func() { os.Stderr = old }()
+	fn()
+	w.Close()
+	return string(<-got)
+}

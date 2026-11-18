@@ -53,7 +53,7 @@ func (e *localError) Unwrap() error { return e.err }
 // throttleError is an upstream (storage, proxy or the API) asking us to slow down
 // rather than a failure.
 type throttleError struct {
-	what  string // "HTTP 509", "MEGA API error -4"
+	what  string // "HTTP 509", "API -4"
 	after time.Duration
 }
 
@@ -115,6 +115,8 @@ type job struct {
 	// checkpointed since, so other files can see what it has yet to write.
 	spaceNeed    atomic.Int64
 	spaceWritten atomic.Int64
+
+	throttleNoted atomic.Bool // the "rate limited" notice was shown for this file
 }
 
 // fileResult is what happened to one file.
@@ -516,12 +518,17 @@ func (j *job) fetchChunk(ctx context.Context, ci int) error {
 		var te *throttleError
 		if errors.As(err, &ae) && ae.throttled() {
 			// The link request was throttled: wait longer each time, like call does.
-			te = &throttleError{what: fmt.Sprintf("MEGA API error %d", int(ae)), after: throttleDelay(throttled + 1)}
+			te = &throttleError{what: fmt.Sprintf("API %d", int(ae)), after: throttleDelay(throttled + 1)}
 			err = te
 		}
 		if errors.As(err, &te) && throttled < maxThrottleWaits {
 			throttled++
 			debugf("%s: %v", label, err)
+			if j.throttleNoted.CompareAndSwap(false, true) {
+				// Once per file, so a rate limit is visible without -v (and when piped,
+				// where there's no dashboard row to show it); later waits stay quiet.
+				noticef("%s: rate limited (%s), waiting %s", j.shown, te.what, te.after.Round(time.Second))
+			}
 			j.row.setNote(fmt.Sprintf("rate limited, waiting %ds", int(te.after.Seconds())))
 			if !sleepCtx(ctx, te.after) {
 				return ctx.Err()
