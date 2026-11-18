@@ -109,12 +109,19 @@ func (r spaceReport) short() bool {
 	return r.err == nil && r.need > 0 && r.free < r.need+spaceMargin(r.need)
 }
 
+// shortfall says by how much a selection doesn't fit, after "not enough disk
+// space"; a real run and a dry run word it the same.
+func (r spaceReport) shortfall() string {
+	return fmt.Sprintf("in %s: %s to download, %s free (%s short, including %s headroom)",
+		r.dir, formatBytes(r.need), formatBytes(r.free),
+		formatBytes(r.need+spaceMargin(r.need)-r.free), formatBytes(spaceMargin(r.need)))
+}
+
 func (r spaceReport) asError() error {
-	return fmt.Errorf("%w in %s: %s to download, %s free (%s short, including %s headroom).\n"+
+	return fmt.Errorf("%w %s.\n"+
 		"Free up space, choose another --output, or download less with --path or --select. "+
 		"--no-space-check skips this check",
-		errNoSpace, r.dir, formatBytes(r.need), formatBytes(r.free),
-		formatBytes(r.need+spaceMargin(r.need)-r.free), formatBytes(spaceMargin(r.need)))
+		errNoSpace, r.shortfall())
 }
 
 // spaceGuard re-checks free space as each file starts. A nil guard checks nothing.

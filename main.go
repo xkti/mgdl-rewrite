@@ -166,10 +166,9 @@ func printSpace(r spaceReport, short string) {
 	case r.err != nil:
 		fmt.Printf("free space in %s is unknown (%v)\n", r.dir, r.err)
 	case r.short():
-		fmt.Printf("%s\n", colour("31", fmt.Sprintf("NOT ENOUGH SPACE: %s needed on disk, %s free in %s — %s",
-			formatBytes(r.need+spaceMargin(r.need)), formatBytes(r.free), r.dir, short)))
+		fmt.Printf("%v %s — %s\n", errNoSpace, r.shortfall(), short)
 	default:
-		fmt.Printf("%s needed on disk, %s free in %s\n", formatBytes(r.need), formatBytes(r.free), r.dir)
+		fmt.Printf("%s to download, %s free in %s\n", formatBytes(r.need), formatBytes(r.free), r.dir)
 	}
 }
 
