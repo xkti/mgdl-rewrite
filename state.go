@@ -222,15 +222,37 @@ func (c *controlFile) save() error {
 	if err := os.MkdirAll(filepath.Dir(c.path), 0o755); err != nil {
 		return err
 	}
-	tmp := c.path + ".tmp"
-	if err := os.WriteFile(tmp, raw, 0o644); err != nil {
-		os.Remove(tmp)
+	if err := writeAtomic(c.path, raw); err != nil {
 		c.mu.Lock()
 		c.dirty = true // try again next tick
 		c.mu.Unlock()
 		return err
 	}
-	return os.Rename(tmp, c.path)
+	return nil
+}
+
+// writeAtomic replaces path with data via a synced temporary file, so a crash
+// leaves either the old file or the new one, never an empty or partial one.
+func writeAtomic(path string, data []byte) error {
+	tmp := path + ".tmp"
+	f, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o644)
+	if err != nil {
+		return err
+	}
+	_, err = f.Write(data)
+	if err == nil {
+		err = f.Sync()
+	}
+	if cerr := f.Close(); err == nil {
+		err = cerr
+	}
+	if err == nil {
+		err = os.Rename(tmp, path)
+	}
+	if err != nil {
+		os.Remove(tmp)
+	}
+	return err
 }
 
 // saveLoop saves every control file periodically until ctx ends. The caller saves
