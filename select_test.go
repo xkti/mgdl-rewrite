@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // rowNames lists the visible rows as the picker shows them, indented by depth.
@@ -152,5 +153,28 @@ func TestPickAcrossLinks(t *testing.T) {
 	}
 	if _, runs, err = m.runAll(context.Background(), cfg, l1, m.fileLink(c)); !errors.Is(err, errSelectCancelled) || runs[0].status != statusSkipped {
 		t.Fatalf("cancel: %v, %v", err, runs[0].status)
+	}
+}
+
+// While links load, a rate-limit wait shows in the header as a countdown, and the
+// picker only redraws for it when the seconds change.
+func TestPickerShowsLookupWait(t *testing.T) {
+	s := newSelector(2)
+	s.lookup = &lookupWait{}
+	if s.waitChanged() || strings.Contains(s.title(), "rate limited") {
+		t.Fatal("no wait yet")
+	}
+	s.lookup.set(-6, 5*time.Second)
+	if !s.waitChanged() || !strings.Contains(s.title(), "rate limited (API -6), waiting 5s") {
+		t.Fatalf("title %q", s.title())
+	}
+	s.shownSec = 5 // as draw would record it
+	if s.waitChanged() {
+		t.Fatal("redraw although the countdown hasn't moved")
+	}
+	s.addSkipped()
+	s.addSkipped() // everything loaded: the wait no longer shows
+	if !s.waitChanged() || strings.Contains(s.title(), "rate limited") {
+		t.Fatalf("after loading: %q", s.title())
 	}
 }

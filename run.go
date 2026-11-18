@@ -8,6 +8,8 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
+	"time"
 )
 
 // A run takes every link given on the command line through two phases:
@@ -46,6 +48,8 @@ type linkRun struct {
 	space *spaceGuard // nil with --no-space-check, or when free space is unknown
 
 	matched bool // the link was opened and -p applied to it
+
+	throttleNoted atomic.Bool // the "rate limited" notice was shown for its lookup
 
 	status linkStatus
 	note   string // short reason for skipped/not started/failed
@@ -150,7 +154,23 @@ func planLinks(ctx context.Context, cfg *config, api *apiClient) (runs []*linkRu
 	// order, so names given to clashes don't depend on which link loaded first.
 	resCtx, stopResolving := context.WithCancel(ctx)
 	defer stopResolving()
-	arrivals := resolveInOrder(resCtx, api, runs)
+	// A rate limit while looking links up is shown once per link, or, while the
+	// picker has the screen, in its header.
+	var wait lookupWait
+	note := func(lr *linkRun, code int, d time.Duration) {
+		if picking {
+			wait.set(code, d)
+			return
+		}
+		if lr.throttleNoted.CompareAndSwap(false, true) {
+			what := "looking up the link"
+			if total > 1 {
+				what = fmt.Sprintf("looking up link %d", lr.idx)
+			}
+			noticef("%s: rate limited (API %d), waiting %s", what, code, d.Round(time.Second))
+		}
+	}
+	arrivals := resolveInOrder(resCtx, api, runs, note)
 	merger := newNameMerger()
 	seen := map[string]*linkRun{}
 	pathHit := make([]bool, len(cfg.paths)) // each -p matched in at least one link
@@ -189,7 +209,7 @@ func planLinks(ctx context.Context, cfg *config, api *apiClient) (runs []*linkRu
 	}
 
 	if picking {
-		goOn, cancelled := pick(ctx, runs, arrivals, accept, stopResolving)
+		goOn, cancelled := pick(ctx, runs, arrivals, accept, stopResolving, &wait)
 		for _, f := range held {
 			f()
 		}
@@ -277,6 +297,26 @@ func planLinks(ctx context.Context, cfg *config, api *apiClient) (runs []*linkRu
 	return runs, false
 }
 
+// lookupWait is the latest rate-limit wait while links are looked up, for the
+// picker's header. Lookups run in the background, so it's atomic.
+type lookupWait struct {
+	until atomic.Int64 // UnixNano
+	code  atomic.Int64
+}
+
+func (w *lookupWait) set(code int, d time.Duration) {
+	w.code.Store(int64(code))
+	w.until.Store(time.Now().Add(d).UnixNano())
+}
+
+// remaining is the time left in the current wait (0 if none) and its API code.
+func (w *lookupWait) remaining() (time.Duration, int) {
+	if w == nil || w.until.Load() == 0 {
+		return 0, 0
+	}
+	return max(0, time.Until(time.Unix(0, w.until.Load()))), int(w.code.Load())
+}
+
 // unmatchedPaths reports the -p entries that matched nothing in any link that
 // was opened (nil if all matched, or no link was opened to match them in).
 func unmatchedPaths(paths []string, hit []bool, runs []*linkRun) error {
@@ -310,8 +350,9 @@ var runPickerFn = runPicker
 // to the choice. Links still loading when the picker closes are skipped. It
 // reports whether planning should go on (false: cancelled, interrupted, or the
 // terminal couldn't be used), and whether the user cancelled.
-func pick(ctx context.Context, runs []*linkRun, arrivals <-chan *linkRun, accept func(*linkRun), stopResolving func()) (goOn, cancelled bool) {
+func pick(ctx context.Context, runs []*linkRun, arrivals <-chan *linkRun, accept func(*linkRun), stopResolving func(), wait *lookupWait) (goOn, cancelled bool) {
 	s := newSelector(len(runs))
+	s.lookup = wait
 	arrived := map[*linkRun]bool{}
 	ev, err := runPickerFn(ctx, s, arrivals, func(lr *linkRun) {
 		arrived[lr] = true
@@ -362,7 +403,8 @@ func pick(ctx context.Context, runs []*linkRun, arrivals <-chan *linkRun, accept
 // resolveInOrder resolves links a few at a time and delivers each, in order, once
 // it and every link before it are done. The channel closes after the last one;
 // the caller must drain it (cancel ctx to make the rest finish quickly).
-func resolveInOrder(ctx context.Context, api *apiClient, runs []*linkRun) <-chan *linkRun {
+// note hears about rate-limit waits during each link's lookup.
+func resolveInOrder(ctx context.Context, api *apiClient, runs []*linkRun, note func(*linkRun, int, time.Duration)) <-chan *linkRun {
 	const parallel = 4
 	out := make(chan *linkRun)
 	done := make([]chan struct{}, len(runs))
@@ -375,7 +417,7 @@ func resolveInOrder(ctx context.Context, api *apiClient, runs []*linkRun) <-chan
 			sem <- struct{}{}
 			go func() {
 				defer func() { <-sem; close(done[i]) }()
-				resolveOne(ctx, api, lr)
+				resolveOne(withThrottleNote(ctx, func(code int, d time.Duration) { note(lr, code, d) }), api, lr)
 			}()
 		}
 	}()

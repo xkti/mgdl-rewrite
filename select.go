@@ -7,6 +7,7 @@ import (
 	"os"
 	"sort"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	"golang.org/x/term"
@@ -43,6 +44,9 @@ type selector struct {
 	loaded  int  // links that have arrived (opened or not)
 	dups    bool // some names clash between links
 	confirm bool // Enter pressed while links were still loading
+
+	lookup   *lookupWait // rate-limit waits while links load (nil: none to show)
+	shownSec int         // the wait's seconds left as last drawn, to redraw on change
 }
 
 func newSelector(total int) *selector {
@@ -235,11 +239,19 @@ func runPicker(ctx context.Context, s *selector, arrivals <-chan *linkRun, arriv
 	resized, stopResize := watchResize()
 	defer stopResize()
 
+	tick := time.NewTicker(250 * time.Millisecond) // for the rate-limit countdown
+	defer tick.Stop()
+	redraw := true
 	for {
-		s.draw()
+		if redraw {
+			s.draw()
+		}
+		redraw = true // anything but a tick that changed nothing redraws
 		select {
 		case <-ctx.Done():
 			return 0, ctx.Err()
+		case <-tick.C:
+			redraw = s.waitChanged()
 		case <-resized:
 		case lr, ok := <-arrivals:
 			if !ok {
@@ -433,6 +445,9 @@ func (s *selector) title() string {
 	switch {
 	case s.loading():
 		parts = append(parts, fmt.Sprintf("Loading links: %d of %d", s.loaded, s.total))
+		if d, code := s.lookup.remaining(); d > 0 {
+			parts = append(parts, fmt.Sprintf("rate limited (API %d), waiting %ds", code, waitSecs(d)))
+		}
 	case s.total == 1 && len(s.trees) == 1:
 		return s.trees[0].title()
 	default:
@@ -453,7 +468,27 @@ func label(n *node) string {
 	return n.origName
 }
 
+// waitSecs is a wait's seconds left, rounded up so it never shows 0 while waiting.
+func waitSecs(d time.Duration) int {
+	return int((d + time.Second - 1) / time.Second)
+}
+
+// waitChanged reports whether the rate-limit countdown in the header is out of
+// date, so the picker redraws for it and not otherwise.
+func (s *selector) waitChanged() bool {
+	d, _ := s.lookup.remaining()
+	if !s.loading() {
+		d = 0
+	}
+	return waitSecs(d) != s.shownSec
+}
+
 func (s *selector) draw() {
+	if d, _ := s.lookup.remaining(); s.loading() {
+		s.shownSec = waitSecs(d)
+	} else {
+		s.shownSec = 0
+	}
 	w := terminalWidth()
 	page := s.pageSize()
 	if s.cursor < s.top {

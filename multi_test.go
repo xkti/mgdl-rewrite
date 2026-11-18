@@ -385,3 +385,32 @@ func captureStderr(t *testing.T, fn func()) string {
 	w.Close()
 	return string(<-got)
 }
+
+// A rate limit while looking a link up is noticed once per link.
+func TestLookupRateLimitNoticed(t *testing.T) {
+	m := newFakeMega(t)
+	f := m.addFile("FiLeAaAa", "x.bin", 300, 24, false)
+	g := m.addFile("FiLeBbBb", "y.bin", 300, 25, false)
+	cfg := m.config(t.TempDir())
+
+	m.metaErrs = []int{-6, -6} // the lookup is throttled twice
+	stderr := captureStderr(t, func() {
+		if _, err := m.run(context.Background(), cfg, m.fileLink(f)); err != nil {
+			t.Fatal(err)
+		}
+	})
+	if n := strings.Count(stderr, "rate limited"); n != 1 || !strings.Contains(stderr, "looking up the link: rate limited (API -6), waiting") {
+		t.Fatalf("single link, %d notice(s):\n%s", n, stderr)
+	}
+
+	m.metaErrs = []int{-4}
+	cfg.jobs = 1
+	stderr = captureStderr(t, func() {
+		if _, _, err := m.runAll(context.Background(), cfg, m.fileLink(f), m.fileLink(g)); err != nil {
+			t.Fatal(err)
+		}
+	})
+	if n := strings.Count(stderr, "rate limited (API -4)"); n != 1 || !strings.Contains(stderr, "looking up link ") {
+		t.Fatalf("several links, %d notice(s):\n%s", n, stderr)
+	}
+}

@@ -67,6 +67,15 @@ var apiThrottleWait = 5 * time.Second
 
 const apiThrottleMax = 30 * time.Second
 
+// throttleNoteKey carries a callback that call tells about each throttle wait,
+// so whoever started the call can say so (see withThrottleNote).
+type throttleNoteKey struct{}
+
+// withThrottleNote makes API calls under ctx report their throttle waits to fn.
+func withThrottleNote(ctx context.Context, fn func(code int, wait time.Duration)) context.Context {
+	return context.WithValue(ctx, throttleNoteKey{}, fn)
+}
+
 // throttleDelay is the pause before retrying after the nth consecutive throttle.
 func throttleDelay(n int) time.Duration {
 	return min(time.Duration(n)*apiThrottleWait, apiThrottleMax)
@@ -114,6 +123,9 @@ func (c *apiClient) call(ctx context.Context, folder string, cmd any, out any) e
 			throttles++
 			wait = throttleDelay(throttles)
 			debugf("api: %v; waiting %s (throttled %d/%d, not counted as a retry)", err, wait, throttles, maxThrottleWaits)
+			if fn, ok := ctx.Value(throttleNoteKey{}).(func(int, time.Duration)); ok {
+				fn(int(ae), wait)
+			}
 		} else {
 			wait = min(time.Duration(attempt*attempt)*500*time.Millisecond, 10*time.Second)
 			debugf("api: %v; retrying in %s (attempt %d)", err, wait, attempt)
