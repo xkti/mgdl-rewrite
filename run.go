@@ -480,7 +480,7 @@ func checkSpace(cfg *config, runs []*linkRun, total int) {
 	case r.short():
 		err := r.asError()
 		if total > 1 {
-			err = fmt.Errorf("%d link(s) not started: %w", len(queued), err)
+			err = fmt.Errorf("%s not started: %w", plural(len(queued), "link"), err)
 		}
 		fmt.Fprintf(os.Stderr, "mgdl: %v\n", err)
 		for _, lr := range queued {
@@ -507,8 +507,8 @@ func dryRunSpace(cfg *config, runs []*linkRun) {
 	for _, lr := range queued {
 		files += len(lr.files)
 	}
-	fmt.Printf("\nAll links: %d file(s) from %d link(s)\n", files, len(queued))
-	printSpace(spaceFor(cfg, queued), fmt.Sprintf("a real run wouldn't start %d link(s)", len(queued)))
+	fmt.Printf("\nAll links: %s from %s\n", plural(files, "file"), plural(len(queued), "link"))
+	printSpace(spaceFor(cfg, queued), "a real run wouldn't start "+plural(len(queued), "link"))
 }
 
 // downloadAll is phase 2: one queue of every queued link's files, in link order,
@@ -600,7 +600,7 @@ func downloadAll(ctx context.Context, cfg *config, api *apiClient, hc *http.Clie
 		}
 		lr.status = statusPartial
 		lr.note = fmt.Sprintf("%d of %d files failed", len(lr.failures), len(lr.files))
-		lr.err = fmt.Errorf("%d file(s) failed: %s", len(lr.failures), strings.Join(lr.failures, ", "))
+		lr.err = fmt.Errorf("%s failed: %s", plural(len(lr.failures), "file"), strings.Join(lr.failures, ", "))
 		if len(runs) > 1 {
 			lr.err = fmt.Errorf("%s: %w", lr.label(), lr.err)
 		}

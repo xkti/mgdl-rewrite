@@ -171,3 +171,11 @@ func parseSize(s string) (int64, error) {
 	}
 	return int64(v * mult), nil
 }
+
+// plural formats n with a noun, adding "s" unless n is 1: "1 file", "2 files".
+func plural(n int, noun string) string {
+	if n == 1 {
+		return "1 " + noun
+	}
+	return fmt.Sprintf("%d %ss", n, noun)
+}

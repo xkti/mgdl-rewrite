@@ -213,7 +213,7 @@ func (p *progress) start(ctx context.Context) {
 		os.Stdout.WriteString("\x1b[?25l") // hide the cursor while we redraw
 		con.erase, con.paint = p.eraseLocked, p.renderLocked
 	} else {
-		fmt.Printf("%s\n%d file(s), %s\n\n", p.title, p.totalFiles, formatBytes(p.totalBytes))
+		fmt.Printf("%s\n%s, %s\n\n", p.title, plural(p.totalFiles, "file"), formatBytes(p.totalBytes))
 	}
 	con.mu.Unlock()
 

@@ -200,7 +200,7 @@ func nodeKey(master []byte, k, shareRoot string) ([]byte, error) {
 		}
 		return decryptNodeKey(master, raw)
 	}
-	return nil, fmt.Errorf("no key for this share (%s) among %d key(s)", shareRoot, strings.Count(k, ":"))
+	return nil, fmt.Errorf("no key for this share (%s) among %s", shareRoot, plural(strings.Count(k, ":"), "key"))
 }
 
 // decryptName decrypts a node's attributes and returns its name. Attributes that
@@ -542,5 +542,5 @@ func printTree(w io.Writer, t *tree, showHandles bool) {
 		}
 	}
 	count(t.root)
-	fmt.Fprintf(w, "\n%d folder(s), %d file(s), %s\n", dirs, len(t.files), formatBytes(totalSize(t.files)))
+	fmt.Fprintf(w, "\n%s, %s, %s\n", plural(dirs, "folder"), plural(len(t.files), "file"), formatBytes(totalSize(t.files)))
 }

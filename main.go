@@ -115,9 +115,9 @@ func dryRun(cfg *config, t *tree, ctl *controlFile, files []*node, space *spaceR
 	} else {
 		fmt.Printf("  proxy:   %s\n", strings.Join(cfg.proxies, ", "))
 	}
-	mode := fmt.Sprintf("parallel, %d file(s) × %d connection(s)", cfg.jobs, cfg.connections)
+	mode := fmt.Sprintf("parallel, %s × %s", plural(cfg.jobs, "file"), plural(cfg.connections, "connection"))
 	if cfg.sequential {
-		mode = fmt.Sprintf("sequential, %d file(s) at once", cfg.jobs)
+		mode = fmt.Sprintf("sequential, %s at once", plural(cfg.jobs, "file"))
 	}
 	fmt.Printf("  mode:    %s, %s chunks, verify %v\n\n", mode, formatBytes(cfg.chunkSize), cfg.verify)
 
@@ -145,7 +145,7 @@ func dryRun(cfg *config, t *tree, ctl *controlFile, files []*node, space *spaceR
 			remain += n.size - have
 		} else {
 			chunks := len(planChunks(n.size, cfg.chunkSize))
-			what = fmt.Sprintf("download %s in %d chunk(s)", formatBytes(n.size), chunks)
+			what = fmt.Sprintf("download %s in %s", formatBytes(n.size), plural(chunks, "chunk"))
 			remain += n.size
 		}
 		if blocker != nil && err == nil {
@@ -153,7 +153,7 @@ func dryRun(cfg *config, t *tree, ctl *controlFile, files []*node, space *spaceR
 		}
 		fmt.Printf("  %-*s  %s\n", nameW, truncate(n.relPath, 50), what)
 	}
-	fmt.Printf("\n%d file(s) selected, %s to transfer\n", len(files), formatBytes(remain))
+	fmt.Printf("\n%s selected, %s to transfer\n", plural(len(files), "file"), formatBytes(remain))
 	if space != nil {
 		printSpace(*space, "a real run would stop here")
 	}

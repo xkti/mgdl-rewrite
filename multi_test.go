@@ -236,8 +236,8 @@ func TestDryRunSpaceForAllLinks(t *testing.T) {
 			t.Fatal(err)
 		}
 	})
-	if strings.Count(stdout, "not enough disk space in ") != 1 || !strings.Contains(stdout, "a real run wouldn't start 2 link(s)") ||
-		!strings.Contains(stdout, "All links: 2 file(s) from 2 link(s)") {
+	if strings.Count(stdout, "not enough disk space in ") != 1 || !strings.Contains(stdout, "a real run wouldn't start 2 links") ||
+		!strings.Contains(stdout, "All links: 2 files from 2 links") {
 		t.Fatalf("output:\n%s", stdout)
 	}
 	if m.requests.Load() != 0 || fileExists(filepath.Join(out, ".mgdl-FiLeAaAa")) {

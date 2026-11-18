@@ -157,7 +157,7 @@ func finalPath(cfg *config, t *tree, n *node) (path string, blocker os.FileInfo,
 		p = filepath.Join(filepath.Dir(p), withHandle(filepath.Base(p), n.handle, false))
 	}
 	if free == "" {
-		return "", blocker, fmt.Errorf("%s and %d name(s) with its handle added are all taken by other files",
+		return "", blocker, fmt.Errorf("%s and %d names with its handle added are all taken by other files",
 			t.localPath(cfg.output, n), maxPlaceTries-1)
 	}
 	return free, blocker, nil
@@ -236,7 +236,7 @@ func (e *engine) fetchFile(ctx context.Context, lk *linkRun, n *node, row *slot)
 		}
 		macFails++
 		if macFails >= macBudget {
-			return 0, fmt.Errorf("MAC mismatch after %d download(s) — the file on MEGA may be corrupt", macFails)
+			return 0, fmt.Errorf("MAC mismatch after %s — the file on MEGA may be corrupt", plural(macFails, "download"))
 		}
 		warnf("%s failed verification (MAC mismatch) — deleting and downloading again (%d/%d)", j.shown, macFails+1, macBudget)
 		j.spaceNeed.Store(n.size) // the .part was deleted: all of it is needed again
@@ -804,9 +804,13 @@ func checkModes(cfg *config, t *tree, ctl *controlFile, files []*node) error {
 	if len(bad) == 0 {
 		return nil
 	}
-	return fmt.Errorf("%w: %d file(s) were partially downloaded in parallel mode and can't be resumed with --sequential:\n  %s\n"+
-		"Resume them without --sequential, or delete their .part files and %s to restart sequentially",
-		errModeMismatch, len(bad), strings.Join(bad, "\n  "), ctl.path)
+	were, them, their := "were", "them", "their .part files"
+	if len(bad) == 1 {
+		were, them, their = "was", "it", "its .part file"
+	}
+	return fmt.Errorf("%w: %s %s partially downloaded in parallel mode and can't be resumed with --sequential:\n  %s\n"+
+		"Resume %s without --sequential, or delete %s and %s to restart sequentially",
+		errModeMismatch, plural(len(bad), "file"), were, strings.Join(bad, "\n  "), them, their, ctl.path)
 }
 
 func sleepCtx(ctx context.Context, d time.Duration) bool {
