@@ -79,8 +79,11 @@ type spaceReport struct {
 	err  error // free space unknown
 }
 
+// Every link lands under cfg.output, so that is where free space is measured: a
+// link's own folder would do for one link, but once some links' folders exist and
+// others' don't, links on the same disk would be checked (and guarded) apart.
 func checkLinkSpace(cfg *config, t *tree, ctl *controlFile, files []*node) spaceReport {
-	r := spaceReport{dir: existingDir(t.baseDir(cfg.output))}
+	r := spaceReport{dir: existingDir(cfg.output)}
 	for _, n := range files {
 		r.need += fileNeed(cfg, t, ctl, n)
 	}

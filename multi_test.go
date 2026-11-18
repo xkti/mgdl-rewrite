@@ -414,3 +414,39 @@ func TestLookupRateLimitNoticed(t *testing.T) {
 		t.Fatalf("several links, %d notice(s):\n%s", n, stderr)
 	}
 }
+
+// Links whose folders already exist (a resume) still share one free-space check
+// and one guard: they land on the same disk under --output.
+func TestSpaceCheckedForExistingFolders(t *testing.T) {
+	m := newFakeMega(t)
+	a := m.addFile("FiLeAaAa", "a.bin", 3<<20, 16, false)
+	b := m.addFile("FiLeBbBb", "b.bin", 3<<20, 17, false)
+	la := m.publishFolder("Alpha", []*fakeFile{a}, nil)
+	lb := m.publishShare("ShArE002", "RoOtNoD2", "SuBdIr02", "Beta", []*fakeFile{b}, nil)
+	out := t.TempDir()
+	for _, d := range []string{"Alpha", "Beta"} {
+		if err := os.Mkdir(filepath.Join(out, d), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	fakeFree(t, fixedFree(5<<20)) // enough for either, not both
+	_, runs, err := m.runAll(context.Background(), m.config(out), la, lb)
+	if !errors.Is(err, errNoSpace) {
+		t.Fatalf("err %v", err)
+	}
+	if runs[0].status != statusNotStarted || runs[1].status != statusNotStarted || m.requests.Load() != 0 {
+		t.Fatalf("statuses %v %v, %d requests", runs[0].status, runs[1].status, m.requests.Load())
+	}
+
+	fakeFree(t, fixedFree(1<<30))
+	_, runs, err = m.runAll(context.Background(), m.config(out), la, lb)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if runs[0].space == nil || runs[0].space != runs[1].space {
+		t.Fatal("links on the same disk should share one space guard")
+	}
+	mustEqualFile(t, filepath.Join(out, "Alpha", "a.bin"), a.plain)
+	mustEqualFile(t, filepath.Join(out, "Beta", "b.bin"), b.plain)
+}

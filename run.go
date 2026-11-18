@@ -462,7 +462,8 @@ type spaceGroup struct {
 	runs   []*linkRun
 }
 
-// spaceGroups groups the queued links by the directory they land in.
+// spaceGroups groups the queued links by the directory free space is measured in
+// (checkLinkSpace: the nearest existing ancestor of --output, so one group).
 func spaceGroups(cfg *config, runs []*linkRun) []*spaceGroup {
 	var groups []*spaceGroup
 	byDir := map[string]*spaceGroup{}
