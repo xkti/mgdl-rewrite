@@ -136,8 +136,8 @@ func dryRun(cfg *config, t *tree, ctl *controlFile, files []*node, space *spaceR
 			if cfg.verifyExisting && cfg.verify {
 				what = "verify existing file"
 			}
-		} else if st := ctl.get(n.handle); st != nil && st.Size == n.size && fileExists(final+".part") {
-			have := st.doneBytes()
+		} else if have, ok := resumable(ctl, n, final); ok {
+			st := ctl.get(n.handle)
 			what = fmt.Sprintf("resume from %s (%d%%, %s)", formatBytes(have), pct(have, n.size), st.Mode)
 			if cfg.sequential && st.Mode == modeParallel && have > 0 {
 				what += " — can't resume with --sequential"

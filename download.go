@@ -711,27 +711,6 @@ func (j *job) attemptChunk(ctx context.Context, ci int, label string) error {
 	return nil
 }
 
-// macBoundaryFloor returns the largest MAC boundary <= pos, or end if pos == end.
-func macBoundaryFloor(pos, end int64) int64 {
-	if pos >= end {
-		return end
-	}
-	b := macBoundaryAtOrAfter(pos)
-	if b == pos {
-		return b
-	}
-	// Step back one MAC chunk: the boundary before b.
-	if b > macSteadyStart {
-		return b - macSteadyStep
-	}
-	var prev, at int64
-	for i := int64(1); at < b; i++ {
-		prev = at
-		at += i * macChunkBase
-	}
-	return prev
-}
-
 // record checkpoints a chunk's progress and folds whatever MACs can now be folded:
 // the meta-MAC is a strict in-order CBC over chunk MACs, so it advances only through
 // the leading run of chunks; MACs of chunks that finished early wait in the state.
@@ -747,10 +726,7 @@ func (j *job) record(ci int, done int64, macs [][16]byte) {
 		for st.Folded < len(st.Chunks) {
 			front := st.Chunks[st.Folded]
 			for _, m := range front.MACs {
-				for i := range st.Meta {
-					st.Meta[i] ^= m[i]
-				}
-				j.fold.Encrypt(st.Meta[:], st.Meta[:])
+				foldMAC(j.fold, (*[16]byte)(&st.Meta), m)
 			}
 			front.MACs = nil
 			if !front.complete() {

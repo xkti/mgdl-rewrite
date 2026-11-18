@@ -64,8 +64,10 @@ func TestMACBoundaries(t *testing.T) {
 		if got := macBoundaryAtOrAfter(mid); got != want[i+1] {
 			t.Fatalf("macBoundaryAtOrAfter(%d) = %d, want %d", mid, got, want[i+1])
 		}
-		if got := macBoundaryFloor(mid, 1<<40); got != want[i] {
-			t.Fatalf("macBoundaryFloor(%d) = %d, want %d", mid, got, want[i])
+		for _, x := range []int64{want[i], mid, want[i+1] - 1} {
+			if got := macBoundaryFloor(x, 1<<40); got != want[i] {
+				t.Fatalf("macBoundaryFloor(%d) = %d, want %d", x, got, want[i])
+			}
 		}
 	}
 	if macSteadyStart != 4608*1024 {
@@ -187,3 +189,6 @@ func encryptAttrs(key []byte, name string) string {
 	cipher.NewCBCEncrypter(block, make([]byte, 16)).CryptBlocks(out, plain)
 	return b64enc(out)
 }
+
+// isMACBoundary reports whether x starts a MAC chunk.
+func isMACBoundary(x int64) bool { return macBoundaryAtOrAfter(x) == x }

@@ -65,13 +65,23 @@ func fileNeedAt(final string, ctl *controlFile, n *node) int64 {
 	if fi, err := os.Stat(final); err == nil && !fi.IsDir() && fi.Size() == n.size {
 		return 0 // complete (a failed --verify-existing deletes it first, so still 0 net)
 	}
-	if done, size, ok := ctl.progress(n.handle); ok && size == n.size && fileExists(final+".part") {
+	if done, ok := resumable(ctl, n, final); ok {
 		return n.size - done
 	}
 	return n.size
 }
 
-// spaceReport is the up-front check for one link.
+// resumable reports whether a run would resume a file going to final, and from
+// how far: its saved state is for the file's current size and its .part is there.
+func resumable(ctl *controlFile, n *node, final string) (done int64, ok bool) {
+	done, size, ok := ctl.progress(n.handle)
+	if !ok || size != n.size || !fileExists(final+".part") {
+		return 0, false
+	}
+	return done, true
+}
+
+// spaceReport is the up-front check.
 type spaceReport struct {
 	dir  string
 	need int64
@@ -79,13 +89,16 @@ type spaceReport struct {
 	err  error // free space unknown
 }
 
-// Every link lands under cfg.output, so that is where free space is measured: a
-// link's own folder would do for one link, but once some links' folders exist and
-// others' don't, links on the same disk would be checked (and guarded) apart.
-func checkLinkSpace(cfg *config, t *tree, ctl *controlFile, files []*node) spaceReport {
+// spaceFor adds up what the links' selected files still need, against the free
+// space under --output. Every link lands there, so one figure covers them all (a
+// link's own folder wouldn't: once some links' folders exist and others' don't,
+// links on the same disk would be checked, and guarded, apart).
+func spaceFor(cfg *config, runs []*linkRun) spaceReport {
 	r := spaceReport{dir: existingDir(cfg.output)}
-	for _, n := range files {
-		r.need += fileNeed(cfg, t, ctl, n)
+	for _, lr := range runs {
+		for _, n := range lr.files {
+			r.need += fileNeed(cfg, lr.tree, lr.ctl, n)
+		}
 	}
 	r.free, r.err = freeSpaceFn(r.dir)
 	return r

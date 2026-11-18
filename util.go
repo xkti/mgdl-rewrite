@@ -88,8 +88,7 @@ func pct(done, total int64) int {
 	if total <= 0 {
 		return 0
 	}
-	v := min(int(float64(done)/float64(total)*100), 100)
-	return v
+	return min(int(float64(done)/float64(total)*100), 100)
 }
 
 // formatBytes prints a binary (IEC) size: KiB/MiB/GiB are powers of 1024, matching

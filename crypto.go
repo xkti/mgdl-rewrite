@@ -158,8 +158,20 @@ func macBoundaryAtOrAfter(x int64) int64 {
 	return macSteadyStart
 }
 
-// isMACBoundary reports whether x starts a MAC chunk.
-func isMACBoundary(x int64) bool { return macBoundaryAtOrAfter(x) == x }
+// macBoundaryFloor returns the largest MAC boundary <= pos, or end if pos >= end.
+func macBoundaryFloor(pos, end int64) int64 {
+	if pos >= end {
+		return end
+	}
+	if pos >= macSteadyStart {
+		return macSteadyStart + (pos-macSteadyStart)/macSteadyStep*macSteadyStep
+	}
+	var b int64
+	for next := macChunkEnd(0); next <= pos; next = macChunkEnd(b) {
+		b = next
+	}
+	return b
+}
 
 // macStream computes the CBC-MAC of one stream of plaintext as it arrives,
 // emitting one 16-byte MAC per MEGA MAC chunk. It is positioned at a MAC chunk
@@ -267,9 +279,6 @@ func (m *macStream) Write(p []byte) [][16]byte {
 	return done
 }
 
-// Pos is the absolute offset of the next byte the stream expects.
-func (m *macStream) Pos() int64 { return m.pos }
-
 // metaFold is the running second-level CBC over chunk MACs (zero IV).
 type metaFold struct {
 	block cipher.Block
@@ -282,11 +291,14 @@ func newMetaFold(key [16]byte, state [16]byte) *metaFold {
 }
 
 // add folds one chunk MAC into the meta-MAC.
-func (f *metaFold) add(cmac [16]byte) {
-	for i := range f.state {
-		f.state[i] ^= cmac[i]
+func (f *metaFold) add(cmac [16]byte) { foldMAC(f.block, &f.state, cmac) }
+
+// foldMAC is one step of the meta-MAC's CBC: state = E(state XOR cmac).
+func foldMAC(block cipher.Block, state *[16]byte, cmac [16]byte) {
+	for i := range state {
+		state[i] ^= cmac[i]
 	}
-	f.block.Encrypt(f.state[:], f.state[:])
+	block.Encrypt(state[:], state[:])
 }
 
 // condense packs the 16-byte meta-MAC into the 8 bytes stored in the node key.

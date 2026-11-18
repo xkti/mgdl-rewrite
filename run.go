@@ -276,7 +276,7 @@ func planLinks(ctx context.Context, cfg *config, api *apiClient) (runs []*linkRu
 			// With several links, space is reported once for all of them, below.
 			var space *spaceReport
 			if total == 1 && !cfg.noSpaceCheck {
-				r := checkLinkSpace(cfg, t, lr.ctl, lr.files)
+				r := spaceFor(cfg, []*linkRun{lr})
 				space = &r
 			}
 			dryRun(cfg, t, lr.ctl, lr.files, space)
@@ -455,60 +455,43 @@ func resolveOne(ctx context.Context, api *apiClient, lr *linkRun) {
 	}
 }
 
-// spaceGroup is the links whose files land on one filesystem directory, with
-// their combined need.
-type spaceGroup struct {
-	report spaceReport
-	runs   []*linkRun
-}
-
-// spaceGroups groups the queued links by the directory free space is measured in
-// (checkLinkSpace: the nearest existing ancestor of --output, so one group).
-func spaceGroups(cfg *config, runs []*linkRun) []*spaceGroup {
-	var groups []*spaceGroup
-	byDir := map[string]*spaceGroup{}
+// queuedRuns is the links still going ahead, with files selected.
+func queuedRuns(runs []*linkRun) []*linkRun {
+	var out []*linkRun
 	for _, lr := range runs {
-		if lr.status != statusQueued || lr.files == nil {
-			continue
+		if lr.status == statusQueued && lr.files != nil {
+			out = append(out, lr)
 		}
-		r := checkLinkSpace(cfg, lr.tree, lr.ctl, lr.files)
-		g := byDir[r.dir]
-		if g == nil {
-			g = &spaceGroup{report: r}
-			byDir[r.dir] = g
-			groups = append(groups, g)
-		} else {
-			g.report.need += r.need
-		}
-		g.runs = append(g.runs, lr)
 	}
-	return groups
+	return out
 }
 
-// checkSpace is the up-front free-space check for the whole run: if a group's
-// combined need doesn't fit, none of its links start.
+// checkSpace is the up-front free-space check for the whole run: if the queued
+// links' combined need doesn't fit, none of them start.
 func checkSpace(cfg *config, runs []*linkRun, total int) {
-	for _, g := range spaceGroups(cfg, runs) {
-		r := g.report
-		switch {
-		case r.err != nil:
-			warnf("cannot determine free space in %s (%v); not checking it", r.dir, r.err)
-		case r.short():
-			err := r.asError()
-			if total > 1 {
-				err = fmt.Errorf("%d link(s) not started: %w", len(g.runs), err)
-			}
-			fmt.Fprintf(os.Stderr, "mgdl: %v\n", err)
-			for _, lr := range g.runs {
-				lr.stop(statusNotStarted, err)
-				lr.note = errNoSpace.Error()
-			}
-		default:
-			debugf("space: %s to download, %s free in %s", formatBytes(r.need), formatBytes(r.free), r.dir)
-			guard := newSpaceGuard(r.dir)
-			for _, lr := range g.runs {
-				lr.space = guard
-			}
+	queued := queuedRuns(runs)
+	if len(queued) == 0 {
+		return
+	}
+	r := spaceFor(cfg, queued)
+	switch {
+	case r.err != nil:
+		warnf("cannot determine free space in %s (%v); not checking it", r.dir, r.err)
+	case r.short():
+		err := r.asError()
+		if total > 1 {
+			err = fmt.Errorf("%d link(s) not started: %w", len(queued), err)
+		}
+		fmt.Fprintf(os.Stderr, "mgdl: %v\n", err)
+		for _, lr := range queued {
+			lr.stop(statusNotStarted, err)
+			lr.note = errNoSpace.Error()
+		}
+	default:
+		debugf("space: %s to download, %s free in %s", formatBytes(r.need), formatBytes(r.free), r.dir)
+		guard := newSpaceGuard(r.dir)
+		for _, lr := range queued {
+			lr.space = guard
 		}
 	}
 }
@@ -516,21 +499,16 @@ func checkSpace(cfg *config, runs []*linkRun, total int) {
 // dryRunSpace closes a dry run of several links with what they need together,
 // checked the way a real run would.
 func dryRunSpace(cfg *config, runs []*linkRun) {
-	groups := spaceGroups(cfg, runs)
-	if len(groups) == 0 {
+	queued := queuedRuns(runs)
+	if len(queued) == 0 {
 		return
 	}
-	files, links := 0, 0
-	for _, g := range groups {
-		links += len(g.runs)
-		for _, lr := range g.runs {
-			files += len(lr.files)
-		}
+	files := 0
+	for _, lr := range queued {
+		files += len(lr.files)
 	}
-	fmt.Printf("\nAll links: %d file(s) from %d link(s)\n", files, links)
-	for _, g := range groups {
-		printSpace(g.report, fmt.Sprintf("a real run wouldn't start %d link(s)", len(g.runs)))
-	}
+	fmt.Printf("\nAll links: %d file(s) from %d link(s)\n", files, len(queued))
+	printSpace(spaceFor(cfg, queued), fmt.Sprintf("a real run wouldn't start %d link(s)", len(queued)))
 }
 
 // downloadAll is phase 2: one queue of every queued link's files, in link order,
