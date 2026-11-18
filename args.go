@@ -285,7 +285,8 @@ Selection:
   -l, --list              print the file tree with sizes and exit
   -p, --path PATH         download only this file or folder (relative to the link's
                           folder, e.g. "Season 1/ep01.mkv"); repeatable
-  -s, --select            choose files in an interactive tree (-p entries preselected)
+  -s, --select            choose files from all links in one interactive tree
+                          (-p entries preselected)
   -n, --dry-run           show what would be downloaded or resumed; transfer nothing
 
 Transfer:

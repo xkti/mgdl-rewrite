@@ -48,7 +48,7 @@ Tests are hermetic (`e2e_test.go` runs a fake API + storage + proxy with
 | `download.go` | Per-file job: prepare/reconcile state, parallel or sequential chunk workers, per-attempt fetch with decrypt+MAC+checkpoint, retry/throttle/stall logic, MAC check, `--verify-existing`. |
 | `progress.go` | Dashboard (ported from dl) / plain-mode status lines, summary. |
 | `log.go` | `infof`/`warnf`/`debugf`; erases and redraws the dashboard around each line. |
-| `select.go` | `--select` tree picker (raw mode, alternate screen). |
+| `select.go` | `--select` picker for all links at once (raw mode, alternate screen): sections fill in as links load, same-named folders merged, duplicates yellow. |
 | `term*.go` | TTY detection, width, Windows VT enablement. |
 | `width.go` | Display width (wide CJK/emoji = 2, combining = 0), `truncate`, `padRight`. |
 | `resize_*.go` | `watchResize`: SIGWINCH on Unix, width polling (250 ms) on Windows. |
@@ -73,7 +73,10 @@ Tests are hermetic (`e2e_test.go` runs a fake API + storage + proxy with
   plan is reported and dropped; the rest go ahead. A link whose handle an earlier,
   successfully resolved link already had is skipped as a repeat (it would share
   the control file). Same-named files in different links are **not** de-duplicated:
-  both are downloaded, as below.
+  both are downloaded, as below. Links are resolved four at a time
+  (`resolveInOrder`) but accepted (repeat check, `nameMerger.add`, selection)
+  strictly in order on one goroutine — with `--select`, the picker's — so names
+  never depend on load order and nothing on screen changes under the user.
 - **One control file per link**, all mutation through `controlFile.update` (one
   mutex), saved atomically (tmp + rename) every 2s and on exit, removed when empty.
 - **Final name means verified.** Data goes to `NAME.part`; rename only after the

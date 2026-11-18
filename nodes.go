@@ -268,11 +268,20 @@ func finishTree(dir *node, files *[]*node) {
 // marked dup. Whole trees take part, not just the selection, so names stay the same
 // from run to run with the same links in the same order.
 func mergeTrees(trees []*tree) {
-	taken := map[string]*node{} // lower-cased path under the output → item that claimed it
+	m := newNameMerger()
 	for _, t := range trees {
-		mergeLevel(taken, "", []*node{t.root})
+		m.add(t)
 	}
 }
+
+// nameMerger does mergeTrees one link at a time, as links arrive in order.
+type nameMerger struct {
+	taken map[string]*node // lower-cased path under the output → item that claimed it
+}
+
+func newNameMerger() *nameMerger { return &nameMerger{taken: map[string]*node{}} }
+
+func (m *nameMerger) add(t *tree) { mergeLevel(m.taken, "", []*node{t.root}) }
 
 // mergeLevel places items, all children of the directory at dir, then descends.
 // Items that don't clash claim their names first, so a "_HANDLE" name generated

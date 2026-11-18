@@ -122,54 +122,78 @@ func runLinks(ctx context.Context, cfg *config, api *apiClient, hc *http.Client)
 // planLinks is phase 1. Links that can't go ahead are marked and reported; the
 // rest come back as statusQueued, with files selected and space checked.
 func planLinks(ctx context.Context, cfg *config, api *apiClient) []*linkRun {
-	runs := make([]*linkRun, len(cfg.links))
-	total := len(runs)
-
-	// Resolve. A link whose share or file was already resolved by an earlier link
-	// is the same thing given twice and would share its control file: drop it.
-	// (Only successful links count, so a repeat with a working key still runs.)
-	seen := map[string]*linkRun{}
-	var trees []*tree
+	total := len(cfg.links)
+	runs := make([]*linkRun, total)
 	for i, raw := range cfg.links {
-		lr := &linkRun{idx: i + 1, raw: raw}
-		runs[i] = lr
-		if ctx.Err() != nil {
-			lr.status = statusInterrupted
-			continue
+		runs[i] = &linkRun{idx: i + 1, raw: raw}
+	}
+
+	// While the picker has the screen, messages wait until it closes.
+	picking := cfg.selectTUI && !cfg.list
+	var held []func()
+	say := func(f func()) {
+		if picking {
+			held = append(held, f)
+		} else {
+			f()
 		}
-		l, err := parseLink(raw)
-		if err != nil {
-			lr.stop(statusFailed, err)
-			linkError(lr, total, err)
-			continue
+	}
+
+	// Links are resolved a few at a time but dealt with strictly in command-line
+	// order, so names given to clashes don't depend on which link loaded first.
+	resCtx, stopResolving := context.WithCancel(ctx)
+	defer stopResolving()
+	arrivals := resolveInOrder(resCtx, api, runs)
+	merger := newNameMerger()
+	seen := map[string]*linkRun{}
+	accept := func(lr *linkRun) {
+		switch lr.status {
+		case statusInterrupted:
+			return
+		case statusFailed:
+			say(func() { linkError(lr, total, lr.err) })
+			return
 		}
-		lr.link = l
-		if first := seen[l.handle()]; first != nil {
+		// A link whose share or file an earlier link already resolved is the same
+		// thing given twice and would share its control file: drop it. (Only links
+		// that worked count, so a repeat with a working key still runs.)
+		if first := seen[lr.link.handle()]; first != nil {
 			lr.tree = first.tree // reported alongside the first
 			lr.status, lr.note = statusSkipped, fmt.Sprintf("same as link %d", first.idx)
-			noticef("link %d is the same as link %d, skipping it", lr.idx, first.idx)
-			continue
+			say(func() { noticef("link %d is the same as link %d, skipping it", lr.idx, first.idx) })
+			return
 		}
-		t, err := resolve(ctx, api, l)
-		if errors.Is(err, context.Canceled) {
-			lr.status = statusInterrupted
-			continue
-		}
+		seen[lr.link.handle()] = lr
+		lr.tree.showRoot = total > 1
+		merger.add(lr.tree)
+		files, err := lr.tree.selectPaths(cfg.paths)
 		if err != nil {
 			lr.stop(statusFailed, err)
-			linkError(lr, total, fmt.Errorf("%s: %w", raw, err))
-			continue
+			say(func() { linkError(lr, total, err) })
+			return
 		}
-		lr.tree = t
-		t.showRoot = total > 1
-		seen[l.handle()] = lr
-		trees = append(trees, t)
+		lr.files = files
 	}
-	mergeTrees(trees)
 
-	// Select, list, and load each link's state.
+	if picking {
+		if !pick(ctx, runs, arrivals, accept, stopResolving) {
+			for _, f := range held {
+				f()
+			}
+			return runs
+		}
+		for _, f := range held {
+			f()
+		}
+	} else {
+		for lr := range arrivals {
+			accept(lr)
+		}
+	}
+
+	// List, report renames, and load each link's state.
 	for _, lr := range runs {
-		if lr.tree == nil || lr.status != statusQueued {
+		if lr.status != statusQueued || lr.tree == nil {
 			continue
 		}
 		t := lr.tree
@@ -179,25 +203,6 @@ func planLinks(ctx context.Context, cfg *config, api *apiClient) []*linkRun {
 			}
 			infof("[%d/%d] %s", lr.idx, total, lr.raw)
 		}
-		files, err := t.selectPaths(cfg.paths)
-		if err != nil {
-			lr.stop(statusFailed, err)
-			linkError(lr, total, err)
-			continue
-		}
-		if cfg.selectTUI && t.root.isDir {
-			files, err = runSelector(t, files)
-			if errors.Is(err, errSelectCancelled) {
-				infof("%s: selection cancelled, skipping", t.title())
-				lr.status, lr.note = statusSkipped, "selection cancelled"
-				continue
-			}
-			if err != nil {
-				lr.stop(statusFailed, err)
-				linkError(lr, total, err)
-				continue
-			}
-		}
 		if cfg.list {
 			printTree(os.Stdout, t, cfg.verbose)
 			for _, note := range renameNotes(t, t.files) {
@@ -205,25 +210,25 @@ func planLinks(ctx context.Context, cfg *config, api *apiClient) []*linkRun {
 			}
 			continue
 		}
-		for _, note := range renameNotes(t, files) {
+		for _, note := range renameNotes(t, lr.files) {
 			noticef("%s", note)
 		}
-		if len(files) == 0 {
+		if len(lr.files) == 0 {
 			infof("%s: nothing selected", t.title())
 			lr.status, lr.note = statusSkipped, "nothing selected"
 			continue
 		}
-		lr.files = files
+		var err error
 		if lr.ctl, err = loadControl(t.baseDir(cfg.output), lr.link.handle()); err != nil {
 			lr.stop(statusFailed, err)
 			linkError(lr, total, err)
 			continue
 		}
 		if cfg.dryRun {
-			dryRun(cfg, t, lr.ctl, files, checkLinkSpace(cfg, t, lr.ctl, files))
+			dryRun(cfg, t, lr.ctl, lr.files, checkLinkSpace(cfg, t, lr.ctl, lr.files))
 			continue
 		}
-		if err := checkModes(cfg, t, lr.ctl, files); err != nil {
+		if err := checkModes(cfg, t, lr.ctl, lr.files); err != nil {
 			lr.stop(statusNotStarted, err)
 			linkError(lr, total, err)
 		}
@@ -232,6 +237,116 @@ func planLinks(ctx context.Context, cfg *config, api *apiClient) []*linkRun {
 		checkSpace(cfg, runs, total)
 	}
 	return runs
+}
+
+// runPickerFn is the interactive picker; a variable so tests can play the user.
+var runPickerFn = runPicker
+
+// pick runs the --select picker while links arrive, then narrows each link's files
+// to the choice. Links still loading when the picker closes are skipped. It
+// reports whether planning should go on (false: cancelled, interrupted, or the
+// terminal couldn't be used).
+func pick(ctx context.Context, runs []*linkRun, arrivals <-chan *linkRun, accept func(*linkRun), stopResolving func()) bool {
+	s := newSelector(len(runs))
+	arrived := map[*linkRun]bool{}
+	ev, err := runPickerFn(ctx, s, arrivals, func(lr *linkRun) {
+		arrived[lr] = true
+		accept(lr)
+		switch {
+		case lr.status == statusFailed:
+			s.addBroken(lr)
+		case lr.status == statusQueued:
+			s.addTree(lr.tree, lr.files)
+		default:
+			s.addSkipped()
+		}
+	})
+	stopResolving()
+	for range arrivals { // wait for the resolvers to finish before touching their links
+	}
+
+	interrupted := ctx.Err() != nil
+	for _, lr := range runs {
+		switch {
+		case arrived[lr] && lr.status != statusQueued:
+			// already settled: failed, a repeat
+		case interrupted:
+			lr.status = statusInterrupted
+		case err != nil:
+			lr.stop(statusFailed, err)
+		case ev == pickerCancelled:
+			lr.status, lr.note = statusSkipped, "selection cancelled"
+		case !arrived[lr]:
+			lr.status, lr.note = statusSkipped, "still loading when the selection was made"
+		default:
+			lr.files = s.chosenFiles(lr.tree)
+		}
+	}
+	switch {
+	case interrupted:
+		return false
+	case err != nil:
+		fmt.Fprintf(os.Stderr, "mgdl: %v\n", err)
+		return false
+	case ev == pickerCancelled:
+		infof("selection cancelled, nothing downloaded")
+		return false
+	}
+	return true
+}
+
+// resolveInOrder resolves links a few at a time and delivers each, in order, once
+// it and every link before it are done. The channel closes after the last one;
+// the caller must drain it (cancel ctx to make the rest finish quickly).
+func resolveInOrder(ctx context.Context, api *apiClient, runs []*linkRun) <-chan *linkRun {
+	const parallel = 4
+	out := make(chan *linkRun)
+	done := make([]chan struct{}, len(runs))
+	for i := range done {
+		done[i] = make(chan struct{})
+	}
+	go func() {
+		sem := make(chan struct{}, parallel)
+		for i, lr := range runs {
+			sem <- struct{}{}
+			go func() {
+				defer func() { <-sem; close(done[i]) }()
+				resolveOne(ctx, api, lr)
+			}()
+		}
+	}()
+	go func() {
+		defer close(out)
+		for i, lr := range runs {
+			<-done[i]
+			out <- lr
+		}
+	}()
+	return out
+}
+
+// resolveOne parses and resolves a link, setting its link and tree, or its failure.
+func resolveOne(ctx context.Context, api *apiClient, lr *linkRun) {
+	if ctx.Err() != nil {
+		lr.status = statusInterrupted
+		return
+	}
+	l, err := parseLink(lr.raw)
+	if err != nil {
+		lr.stop(statusFailed, err)
+		return
+	}
+	lr.link = l
+	t, err := resolve(ctx, api, l)
+	switch {
+	case ctx.Err() != nil:
+		lr.status = statusInterrupted
+	case err != nil:
+		lr.stop(statusFailed, err)
+		lr.err = fmt.Errorf("%s: %w", lr.raw, err)
+	default:
+		lr.tree = t
+	}
 }
 
 // checkSpace is the up-front free-space check for the whole run. Links are grouped
