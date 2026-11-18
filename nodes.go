@@ -527,10 +527,11 @@ func printTree(w io.Writer, t *tree, showHandles bool) {
 			}
 		}
 	}
-	if t.root.isDir {
-		walk(t.root, "")
+	if !t.root.isDir {
+		return // a file link's one line already gives its name and size
 	}
-	dirs := 0
+	walk(t.root, "")
+	dirs := 1 // the shared folder itself counts
 	var count func(n *node)
 	count = func(n *node) {
 		for _, c := range n.children {
