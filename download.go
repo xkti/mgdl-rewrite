@@ -23,9 +23,6 @@ const (
 	// readChunk is how much is read, decrypted, MACed and written per iteration.
 	readChunk = 256 * 1024
 
-	// stallTimeout drops a connection that has delivered nothing for this long.
-	stallTimeout = 60 * time.Second
-
 	// maxThrottleWaits caps the free (not counted as retries) waits on 429/503/509.
 	maxThrottleWaits = 20
 
@@ -38,6 +35,10 @@ const (
 	// corrupt upload) would otherwise download forever.
 	macRetriesWhenInfinite = 3
 )
+
+// stallTimeout drops a connection that has delivered nothing for this long. Time
+// spent waiting for --limit-rate doesn't count. A variable so tests can shrink it.
+var stallTimeout = 60 * time.Second
 
 // errModeMismatch is returned when a parallel partial download is resumed with
 // --sequential.
@@ -613,18 +614,21 @@ func (j *job) attemptChunk(ctx context.Context, ci int, label string) error {
 	defer j.row.addConn(-1)
 
 	// Stall watchdog: a silent connection becomes a retry instead of a hung worker.
+	// While the rate limiter holds this connection back, the silence is ours, not
+	// the server's, so it isn't counted.
 	var lastRead atomic.Int64
 	lastRead.Store(time.Now().UnixNano())
-	var stalled atomic.Bool
+	var limited, stalled atomic.Bool
+	timeout := stallTimeout
 	go func() {
-		t := time.NewTicker(5 * time.Second)
+		t := time.NewTicker(timeout / 12)
 		defer t.Stop()
 		for {
 			select {
 			case <-reqCtx.Done():
 				return
 			case <-t.C:
-				if time.Since(time.Unix(0, lastRead.Load())) > stallTimeout {
+				if !limited.Load() && time.Since(time.Unix(0, lastRead.Load())) > timeout {
 					stalled.Store(true)
 					cancel()
 					return
@@ -644,9 +648,6 @@ func (j *job) attemptChunk(ctx context.Context, ci int, label string) error {
 
 	buf := make([]byte, readChunk)
 	for pos < c.End {
-		if err := e.lim.wait(ctx, len(buf)); err != nil {
-			return err
-		}
 		room := min(int64(len(buf)), c.End-pos)
 		nr, rerr := resp.Body.Read(buf[:room])
 		if nr > 0 {
@@ -676,13 +677,26 @@ func (j *job) attemptChunk(ctx context.Context, ci int, label string) error {
 				j.record(ci, newCk-c.Start, macs)
 				checkpoint = newCk
 			}
+
+			// Pay for what was actually read: a read often returns far less than buf
+			// (one TLS record, ≤ 16 KiB), so charging len(buf) up front would run
+			// well below --limit-rate.
+			if e.lim != nil {
+				limited.Store(true)
+				err := e.lim.wait(ctx, nr)
+				lastRead.Store(time.Now().UnixNano())
+				limited.Store(false)
+				if err != nil {
+					return err
+				}
+			}
 		}
 		if rerr != nil {
 			if rerr == io.EOF {
 				break
 			}
 			if stalled.Load() {
-				return fmt.Errorf("stalled: no data for %s", stallTimeout)
+				return fmt.Errorf("stalled: no data for %s", timeout)
 			}
 			if ctx.Err() != nil {
 				return ctx.Err()
