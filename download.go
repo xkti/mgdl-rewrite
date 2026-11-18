@@ -406,7 +406,6 @@ func (j *job) prepare() error {
 			if st.doneBytes() > 0 || len(st.Chunks) < 2 {
 				// Already allocated by an earlier run, or a single chunk written from
 				// the start (nothing out of order to zero-fill ahead of).
-				// Already allocated by an earlier run; carry on as it was.
 				debugf("%s: cannot mark the .part sparse (%v); continuing in parallel", j.shown, err)
 			} else {
 				// Without sparse support, sizing the file up front allocates all of it,
