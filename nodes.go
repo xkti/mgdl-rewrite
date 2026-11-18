@@ -27,6 +27,7 @@ type node struct {
 	relPath  string // sanitised path from the link root, '/'-separated ("" for the root)
 	origPath string // same, with original names, for matching -p arguments
 	renamed  string // why name differs from origName ("" if it doesn't)
+	dup      bool   // shares its local path with an item from another link (see mergeTrees)
 }
 
 // tree is a resolved link: what to download and where it belongs.
@@ -35,6 +36,8 @@ type tree struct {
 	folder string // share handle for API calls ("" for a file link)
 	root   *node  // a folder, or a lone file
 	files  []*node
+
+	showRoot bool // several links in the run: rename notices name the link's folder too
 }
 
 // title is what the dashboard and listings call this link.
@@ -257,6 +260,63 @@ func finishTree(dir *node, files *[]*node) {
 	}
 }
 
+// mergeTrees gives every item of a multi-link run its own local path. Links land
+// side by side in the output directory: folders with the same name (ignoring case)
+// merge into one, and any other clash — two files, or a file and a folder — is
+// settled like duplicate siblings within a link: the item from the earlier link
+// keeps its name and the later one gets "_HANDLE" before the extension. Both are
+// marked dup. Whole trees take part, not just the selection, so names stay the same
+// from run to run with the same links in the same order.
+func mergeTrees(trees []*tree) {
+	taken := map[string]*node{} // lower-cased path under the output → item that claimed it
+	for _, t := range trees {
+		mergeLevel(taken, "", []*node{t.root})
+	}
+}
+
+// mergeLevel places items, all children of the directory at dir, then descends.
+// Items that don't clash claim their names first, so a "_HANDLE" name generated
+// for a clash can't take the name of a sibling that already had it.
+func mergeLevel(taken map[string]*node, dir string, items []*node) {
+	key := func(name string) string { return strings.ToLower(joinRel(dir, name)) }
+	var clashes []*node
+	for _, c := range items {
+		switch o := taken[key(c.name)]; {
+		case o == nil:
+			taken[key(c.name)] = c
+		case o.isDir && c.isDir:
+			// the same folder from two links: merge
+		default:
+			o.dup, c.dup = true, true
+			clashes = append(clashes, c)
+		}
+	}
+	for _, c := range clashes {
+		other := "file"
+		if taken[key(c.name)].isDir {
+			other = "folder"
+		}
+		name := c.name
+		for taken[key(name)] != nil {
+			name = withHandle(name, c.handle, c.isDir)
+		}
+		taken[key(name)] = c
+		c.name = name
+		c.renamed = joinReasons(c.renamed, "duplicate: another link has a "+other+" with the same name")
+	}
+	for _, c := range items {
+		switch {
+		case c.parent != nil:
+			c.relPath = joinRel(c.parent.relPath, c.name)
+		case !c.isDir:
+			c.relPath = c.name // the file of a file link
+		}
+		if c.isDir {
+			mergeLevel(taken, joinRel(dir, c.name), c.children)
+		}
+	}
+}
+
 // withHandle tags a name with a node handle to make it unique: "x.txt" becomes
 // "x_HANDLE.txt", a folder "sub" becomes "sub_HANDLE", and a dotfile ".bashrc"
 // becomes ".bashrc_HANDLE".
@@ -357,8 +417,11 @@ func renameNotes(t *tree, files []*node) []string {
 		}
 		seen[n] = true
 		orig := n.origPath
-		if n == t.root {
+		switch {
+		case n == t.root:
 			orig = n.origName
+		case t.showRoot:
+			orig = t.root.origName + "/" + n.origPath
 		}
 		notes = append(notes, fmt.Sprintf("renamed   %s → %s  (%s)", orig, n.name, n.renamed))
 	}

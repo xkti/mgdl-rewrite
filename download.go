@@ -78,16 +78,15 @@ func retryAfter(resp *http.Response, fallback time.Duration) time.Duration {
 	return max(time.Second, min(d, 2*time.Minute))
 }
 
-// engine downloads the selected files of one link.
+// engine downloads the selected files of every link in a run. What belongs to
+// one link (tree, control file, space guard) travels with each job in its linkRun.
 type engine struct {
 	cfg   *config
 	api   *apiClient
 	http  *http.Client
 	lim   *rateLimiter
-	tree  *tree
-	ctl   *controlFile
 	prog  *progress
-	space *spaceGuard // nil with --no-space-check, or when free space is unknown
+	multi bool // several links in the run: status lines name each file's link folder
 
 	noSparseOnce sync.Once // the "filesystem can't do sparse files" notice
 }
@@ -104,7 +103,10 @@ type job struct {
 	part  string
 	row   *slot
 
-	st     *fileState // owned by e.ctl; mutate only inside e.ctl.update
+	lk    *linkRun // the link this file belongs to: its tree, control file and space guard
+	shown string   // the file's path in status lines (displayPath)
+
+	st     *fileState // owned by lk.ctl; mutate only inside lk.ctl.update
 	verify bool       // compute and check the MAC for this file
 	fold   cipher.Block
 	f      *os.File
@@ -126,16 +128,16 @@ const (
 
 // fetchFile brings one file to completion: skip it if already present, otherwise
 // download (resuming if possible), verify, and rename into place.
-func (e *engine) fetchFile(ctx context.Context, n *node, row *slot) (fileResult, error) {
-	final := e.tree.localPath(e.cfg.output, n)
-	j := &job{e: e, n: n, final: final, part: final + ".part", row: row}
+func (e *engine) fetchFile(ctx context.Context, lk *linkRun, n *node, row *slot) (fileResult, error) {
+	final := lk.tree.localPath(e.cfg.output, n)
+	j := &job{e: e, lk: lk, n: n, final: final, part: final + ".part", row: row, shown: displayPath(lk, n, e.multi)}
 
 	if fi, err := os.Stat(final); err == nil {
 		switch {
 		case fi.IsDir():
 			return 0, fmt.Errorf("%s exists and is a directory", final)
 		case fi.Size() != n.size:
-			warnf("%s exists but is %s, expected %s — downloading again", n.relPath, formatBytes(fi.Size()), formatBytes(n.size))
+			warnf("%s exists but is %s, expected %s — downloading again", j.shown, formatBytes(fi.Size()), formatBytes(n.size))
 			if err := os.Remove(final); err != nil {
 				return 0, err
 			}
@@ -145,17 +147,17 @@ func (e *engine) fetchFile(ctx context.Context, n *node, row *slot) (fileResult,
 				return 0, err
 			}
 			if ok {
-				e.ctl.remove(n.handle)
-				infof("%s  %s  (already complete, %s)", colour("32", "verified"), n.relPath, formatBytes(n.size))
+				j.lk.ctl.remove(n.handle)
+				infof("%s  %s  (already complete, %s)", colour("32", "verified"), j.shown, formatBytes(n.size))
 				return resSkipped, nil
 			}
-			warnf("%s failed verification (MAC mismatch) — deleting and downloading again", n.relPath)
+			warnf("%s failed verification (MAC mismatch) — deleting and downloading again", j.shown)
 			if err := os.Remove(final); err != nil {
 				return 0, err
 			}
 		default:
-			e.ctl.remove(n.handle)
-			infof("skip      %s  (already complete, %s)", n.relPath, formatBytes(n.size))
+			j.lk.ctl.remove(n.handle)
+			infof("skip      %s  (already complete, %s)", j.shown, formatBytes(n.size))
 			return resSkipped, nil
 		}
 	}
@@ -163,10 +165,10 @@ func (e *engine) fetchFile(ctx context.Context, n *node, row *slot) (fileResult,
 	if err := os.MkdirAll(filepath.Dir(final), 0o755); err != nil {
 		return 0, err
 	}
-	if err := e.space.claim(j, fileNeed(e.cfg, e.tree, e.ctl, n)); err != nil {
+	if err := j.lk.space.claim(j, fileNeed(e.cfg, j.lk.tree, j.lk.ctl, n)); err != nil {
 		return 0, err
 	}
-	defer e.space.release(j)
+	defer j.lk.space.release(j)
 
 	macBudget := e.cfg.retries
 	if macBudget == 0 {
@@ -185,7 +187,7 @@ func (e *engine) fetchFile(ctx context.Context, n *node, row *slot) (fileResult,
 		if macFails >= macBudget {
 			return 0, fmt.Errorf("MAC mismatch after %d download(s) — the file on MEGA may be corrupt", macFails)
 		}
-		warnf("%s failed verification (MAC mismatch) — deleting and downloading again (%d/%d)", n.relPath, macFails+1, macBudget)
+		warnf("%s failed verification (MAC mismatch) — deleting and downloading again (%d/%d)", j.shown, macFails+1, macBudget)
 		j.spaceNeed.Store(n.size) // the .part was deleted: all of it is needed again
 		j.spaceWritten.Store(0)
 	}
@@ -209,7 +211,7 @@ func (j *job) run(ctx context.Context) (fileResult, error) {
 	done := j.st.doneBytes()
 	j.row.begin(n.name, done, n.size)
 	if done > 0 {
-		infof("resume    %s  (%s of %s, %d%%)", n.relPath, formatBytes(done), formatBytes(n.size), pct(done, n.size))
+		infof("resume    %s  (%s of %s, %d%%)", j.shown, formatBytes(done), formatBytes(n.size), pct(done, n.size))
 	}
 
 	// Pending chunks, in file order.
@@ -220,7 +222,7 @@ func (j *job) run(ctx context.Context) (fileResult, error) {
 		}
 	}
 	debugf("%s: %d byte(s), %d chunk(s), %d pending, mode %s, verify %v",
-		n.relPath, n.size, len(j.st.Chunks), len(pending), j.st.Mode, j.verify)
+		j.shown, n.size, len(j.st.Chunks), len(pending), j.st.Mode, j.verify)
 
 	if len(pending) > 0 {
 		workers := 1
@@ -236,17 +238,17 @@ func (j *job) run(ctx context.Context) (fileResult, error) {
 	verified := false
 	if j.verify && n.size > 0 {
 		var got [8]byte
-		e.ctl.update(func() { got = condense(j.st.Meta) })
+		j.lk.ctl.update(func() { got = condense(j.st.Meta) })
 		if got != n.key.mac {
-			debugf("%s: MAC mismatch, computed %x, expected %x", n.relPath, got, n.key.mac)
+			debugf("%s: MAC mismatch, computed %x, expected %x", j.shown, got, n.key.mac)
 			j.f.Close()
 			j.f = nil
 			os.Remove(j.part)
-			e.ctl.remove(n.handle)
+			j.lk.ctl.remove(n.handle)
 			j.row.reset(0)
 			return 0, errMACMismatch
 		}
-		debugf("%s: MAC ok (%x)", n.relPath, got)
+		debugf("%s: MAC ok (%x)", j.shown, got)
 		verified = true
 	}
 	if err := j.f.Sync(); err != nil {
@@ -259,7 +261,7 @@ func (j *job) run(ctx context.Context) (fileResult, error) {
 	if err := os.Rename(j.part, j.final); err != nil {
 		return 0, fmt.Errorf("renaming: %w", err)
 	}
-	e.ctl.remove(n.handle)
+	j.lk.ctl.remove(n.handle)
 	// "verified" is reserved for --verify-existing; the colour says whether the
 	// MAC was checked (green), couldn't be (yellow), or verification is off (plain).
 	tag := "done    "
@@ -268,7 +270,7 @@ func (j *job) run(ctx context.Context) (fileResult, error) {
 	} else if j.e.cfg.verify && n.size > 0 {
 		tag = colour("33", "done    ")
 	}
-	infof("%s  %s  (%s)", tag, n.relPath, formatBytes(n.size))
+	infof("%s  %s  (%s)", tag, j.shown, formatBytes(n.size))
 	if verified {
 		return resVerified, nil
 	}
@@ -283,7 +285,7 @@ func (j *job) prepare() error {
 		wantMode = modeSequential
 	}
 
-	st := e.ctl.get(n.handle)
+	st := j.lk.ctl.get(n.handle)
 	fi, statErr := os.Stat(j.part)
 	partExists := statErr == nil
 
@@ -300,11 +302,11 @@ func (j *job) prepare() error {
 			reason = ".part file is shorter than recorded"
 		}
 		if reason != "" {
-			warnf("%s: cannot resume (%s) — starting over", n.relPath, reason)
+			warnf("%s: cannot resume (%s) — starting over", j.shown, reason)
 			st = nil
 		}
 	} else if partExists {
-		warnf("%s: found a .part with no saved state — starting over", n.relPath)
+		warnf("%s: found a .part with no saved state — starting over", j.shown)
 	}
 	if st == nil {
 		if partExists {
@@ -319,7 +321,7 @@ func (j *job) prepare() error {
 			Verify: e.cfg.verify,
 			Chunks: planChunks(n.size, e.cfg.chunkSize),
 		}
-		e.ctl.put(n.handle, st)
+		j.lk.ctl.put(n.handle, st)
 	}
 
 	switch {
@@ -329,16 +331,16 @@ func (j *job) prepare() error {
 	case st.NoSparse:
 		// Stays sequential: see the sparse check below.
 	case st.Mode != wantMode:
-		debugf("%s: switching %s → %s", n.relPath, st.Mode, wantMode)
-		e.ctl.update(func() { st.Mode = wantMode })
+		debugf("%s: switching %s → %s", j.shown, st.Mode, wantMode)
+		j.lk.ctl.update(func() { st.Mode = wantMode })
 	}
 
 	j.verify = e.cfg.verify && st.Verify
 	if e.cfg.verify && !st.Verify {
-		warnf("%s: this download was started with --no-verify, so it cannot be verified", n.relPath)
+		warnf("%s: this download was started with --no-verify, so it cannot be verified", j.shown)
 	}
 	if !e.cfg.verify && st.Verify {
-		e.ctl.update(func() { st.Verify = false })
+		j.lk.ctl.update(func() { st.Verify = false })
 	}
 	j.st = st
 	j.fold, _ = aes.NewCipher(n.key.aes[:])
@@ -357,17 +359,17 @@ func (j *job) prepare() error {
 				// Already allocated by an earlier run, or a single chunk written from
 				// the start (nothing out of order to zero-fill ahead of).
 				// Already allocated by an earlier run; carry on as it was.
-				debugf("%s: cannot mark the .part sparse (%v); continuing in parallel", n.relPath, err)
+				debugf("%s: cannot mark the .part sparse (%v); continuing in parallel", j.shown, err)
 			} else {
 				// Without sparse support, sizing the file up front allocates all of it,
 				// and Windows zero-fills ahead of every out-of-order write. Fetch this
 				// file sequentially instead, and keep it that way on resume.
-				debugf("%s: cannot mark the .part sparse (%v); switching to sequential", n.relPath, err)
+				debugf("%s: cannot mark the .part sparse (%v); switching to sequential", j.shown, err)
 				e.noSparseOnce.Do(func() {
 					noticef("%s can't hold sparse files; downloading one connection per file to avoid zero-filling (a different --output avoids this)",
-						existingDir(e.tree.baseDir(e.cfg.output)))
+						existingDir(j.lk.tree.baseDir(e.cfg.output)))
 				})
-				e.ctl.update(func() { st.Mode, st.NoSparse = modeSequential, true })
+				j.lk.ctl.update(func() { st.Mode, st.NoSparse = modeSequential, true })
 			}
 		}
 	}
@@ -391,15 +393,15 @@ func (j *job) discardIfEmpty() {
 	if j.st == nil {
 		return
 	}
-	if done, _, ok := j.e.ctl.progress(j.n.handle); !ok || done > 0 {
+	if done, _, ok := j.lk.ctl.progress(j.n.handle); !ok || done > 0 {
 		return
 	}
 	if err := os.Remove(j.part); err != nil && !errors.Is(err, fs.ErrNotExist) {
-		debugf("%s: removing empty .part: %v", j.n.relPath, err)
+		debugf("%s: removing empty .part: %v", j.shown, err)
 		return
 	}
-	j.e.ctl.remove(j.n.handle)
-	debugf("%s: no progress made; removed the empty .part and its state", j.n.relPath)
+	j.lk.ctl.remove(j.n.handle)
+	debugf("%s: no progress made; removed the empty .part and its state", j.shown)
 }
 
 // runChunks downloads the pending chunks with the given number of workers. The
@@ -441,11 +443,11 @@ func (j *job) runChunks(ctx context.Context, pending []int, workers int) error {
 func (j *job) fetchChunk(ctx context.Context, ci int) error {
 	e := j.e
 	c := j.st.Chunks[ci]
-	label := fmt.Sprintf("%s chunk %d/%d", j.n.relPath, ci+1, len(j.st.Chunks))
+	label := fmt.Sprintf("%s chunk %d/%d", j.shown, ci+1, len(j.st.Chunks))
 	attempts, throttled := 0, 0
 	for {
 		var before int64
-		e.ctl.update(func() { before = c.Done })
+		j.lk.ctl.update(func() { before = c.Done })
 		if c.Start+before >= c.End {
 			return nil
 		}
@@ -462,7 +464,7 @@ func (j *job) fetchChunk(ctx context.Context, ci int) error {
 			return err
 		}
 		var after int64
-		e.ctl.update(func() { after = c.Done })
+		j.lk.ctl.update(func() { after = c.Done })
 
 		var te *throttleError
 		if errors.As(err, &ae) && ae.throttled() {
@@ -506,11 +508,11 @@ func (j *job) attemptChunk(ctx context.Context, ci int, label string) error {
 	e, n := j.e, j.n
 	c := j.st.Chunks[ci]
 	var done int64
-	e.ctl.update(func() { done = c.Done })
+	j.lk.ctl.update(func() { done = c.Done })
 	off := c.Start + done
 
 	// Download URLs are short-lived: a fresh one for every attempt.
-	fi, err := e.api.getLink(ctx, e.tree.folder, n.handle)
+	fi, err := e.api.getLink(ctx, j.lk.tree.folder, n.handle)
 	if err != nil {
 		return err
 	}
@@ -666,7 +668,7 @@ func macBoundaryFloor(pos, end int64) int64 {
 // the meta-MAC is a strict in-order CBC over chunk MACs, so it advances only through
 // the leading run of chunks; MACs of chunks that finished early wait in the state.
 func (j *job) record(ci int, done int64, macs [][16]byte) {
-	j.e.ctl.update(func() {
+	j.lk.ctl.update(func() {
 		st := j.st
 		c := st.Chunks[ci]
 		j.spaceWritten.Add(done - c.Done)

@@ -71,8 +71,14 @@ Interrupted? Run the same command again and it picks up where it stopped.
   boundaries, so resuming never re-reads data from disk; at most the last couple of
   seconds of transfer are fetched again. The control file is deleted once
   everything has finished.
-- **Disk space** is checked before anything starts: if what the selection still
-  needs (counting only what's left of partial downloads) doesn't fit, mgdl stops
+- **Several links download together.** All links are looked up first, then
+  their files share one queue and the `-j` file slots, so the next link starts as
+  soon as a slot is free instead of waiting for the previous link's slowest file.
+  Folders with the same name merge into one; when two links have a file (or a file
+  and a folder) with the same name, both are kept and the later link's one gets
+  `_HANDLE` added, with a notice. A closing report lists how each link went.
+- **Disk space** is checked before anything starts: if what the selection (across
+  all links) still needs (counting only what's left of partial downloads) doesn't fit, mgdl stops
   and says how much is missing. Each file is re-checked as it starts, allowing for
   what the files already downloading still have to write. `.part` files are sparse
   (flagged sparse on NTFS), so they only take up space as data arrives. On

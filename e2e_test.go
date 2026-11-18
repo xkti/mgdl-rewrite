@@ -35,6 +35,7 @@ type fakeMega struct {
 	folder string               // share handle, if a folder is published
 	master []byte
 	nodes  []rawNode
+	extra  map[string][]rawNode // further shares (publishShare), by share handle
 
 	mu         sync.Mutex
 	dropAfter  int64 // drop a storage response after this many bytes…
@@ -128,8 +129,32 @@ func (m *fakeMega) fileLink(f *fakeFile) string {
 func (m *fakeMega) publishFolder(root string, top []*fakeFile, sub []*fakeFile) string {
 	m.folder = "FoLdEr01"
 	m.master = bytes.Repeat([]byte{0x42}, 16)
+	m.nodes = shareNodes(m.master, "RoOtNoDe", "SuBdIr01", root, top, sub)
+	return "https://mega.nz/folder/" + m.folder + "#" + b64enc(m.master)
+}
+
+// publishShare publishes a further share, like publishFolder, under the given
+// share, root and subfolder handles (all distinct from other shares').
+func (m *fakeMega) publishShare(share, rootH, subH, root string, top, sub []*fakeFile) string {
+	master := bytes.Repeat([]byte{share[0]}, 16)
+	if m.extra == nil {
+		m.extra = map[string][]rawNode{}
+	}
+	m.extra[share] = shareNodes(master, rootH, subH, root, top, sub)
+	return "https://mega.nz/folder/" + share + "#" + b64enc(master)
+}
+
+func (m *fakeMega) shareListing(share string) ([]rawNode, bool) {
+	if share != "" && share == m.folder {
+		return m.nodes, true
+	}
+	nodes, ok := m.extra[share]
+	return nodes, ok
+}
+
+func shareNodes(master []byte, rootH, subH, root string, top, sub []*fakeFile) []rawNode {
 	wrap := func(k []byte) string {
-		b, _ := aes.NewCipher(m.master)
+		b, _ := aes.NewCipher(master)
 		out := make([]byte, len(k))
 		for i := 0; i < len(k); i += 16 {
 			b.Encrypt(out[i:i+16], k[i:i+16])
@@ -137,24 +162,24 @@ func (m *fakeMega) publishFolder(root string, top []*fakeFile, sub []*fakeFile) 
 		return b64enc(out)
 	}
 	dirKey := func(seed byte) []byte { return bytes.Repeat([]byte{seed}, 16) }
-	m.nodes = append(m.nodes,
-		rawNode{Handle: "RoOtNoDe", Parent: "OuTsIdE0", Type: 1, Attr: encryptAttrs(dirKey(1), root), Key: "RoOtNoDe:" + wrap(dirKey(1))},
-		rawNode{Handle: "SuBdIr01", Parent: "RoOtNoDe", Type: 1, Attr: encryptAttrs(dirKey(2), "sub"), Key: "RoOtNoDe:" + wrap(dirKey(2))},
-	)
+	nodes := []rawNode{
+		{Handle: rootH, Parent: "OuTsIdE0", Type: 1, Attr: encryptAttrs(dirKey(1), root), Key: rootH + ":" + wrap(dirKey(1))},
+		{Handle: subH, Parent: rootH, Type: 1, Attr: encryptAttrs(dirKey(2), "sub"), Key: rootH + ":" + wrap(dirKey(2))},
+	}
 	add := func(f *fakeFile, parent string) {
 		fk, _ := unpackFileKey(f.key)
-		m.nodes = append(m.nodes, rawNode{Handle: f.handle, Parent: parent, Type: 0, Size: int64(len(f.plain)),
+		nodes = append(nodes, rawNode{Handle: f.handle, Parent: parent, Type: 0, Size: int64(len(f.plain)),
 			Attr: encryptAttrs(fk.aes[:], f.name),
 			// An unrelated share's key first, as real listings sometimes have.
-			Key: "XxXxXxXx:" + b64enc(bytes.Repeat([]byte{9}, 32)) + "/RoOtNoDe:" + wrap(f.key)})
+			Key: "XxXxXxXx:" + b64enc(bytes.Repeat([]byte{9}, 32)) + "/" + rootH + ":" + wrap(f.key)})
 	}
 	for _, f := range top {
-		add(f, "RoOtNoDe")
+		add(f, rootH)
 	}
 	for _, f := range sub {
-		add(f, "SuBdIr01")
+		add(f, subH)
 	}
-	return "https://mega.nz/folder/" + m.folder + "#" + b64enc(m.master)
+	return nodes
 }
 
 func (m *fakeMega) serveAPI(w http.ResponseWriter, r *http.Request) {
@@ -177,7 +202,7 @@ func (m *fakeMega) serveAPI(w http.ResponseWriter, r *http.Request) {
 	case "g":
 		h, _ := cmd["p"].(string)
 		if n, ok := cmd["n"].(string); ok {
-			if r.URL.Query().Get("n") != m.folder {
+			if _, ok := m.shareListing(r.URL.Query().Get("n")); !ok {
 				w.Write([]byte("[-11]"))
 				return
 			}
@@ -196,11 +221,12 @@ func (m *fakeMega) serveAPI(w http.ResponseWriter, r *http.Request) {
 		}
 		json.NewEncoder(w).Encode([]any{res})
 	case "f":
-		if r.URL.Query().Get("n") != m.folder {
+		nodes, ok := m.shareListing(r.URL.Query().Get("n"))
+		if !ok {
 			w.Write([]byte("[-9]"))
 			return
 		}
-		json.NewEncoder(w).Encode([]any{map[string]any{"f": m.nodes}})
+		json.NewEncoder(w).Encode([]any{map[string]any{"f": nodes}})
 	default:
 		w.Write([]byte("[-2]"))
 	}
@@ -325,7 +351,15 @@ func (m *fakeMega) apiClient() *apiClient {
 }
 
 func (m *fakeMega) run(ctx context.Context, cfg *config, link string) (runStats, error) {
-	return processLink(ctx, cfg, m.apiClient(), newDownloadHTTPClient(), link)
+	st, _, err := m.runAll(ctx, cfg, link)
+	return st, err
+}
+
+// runAll runs several links as one, as the command line does.
+func (m *fakeMega) runAll(ctx context.Context, cfg *config, links ...string) (runStats, []*linkRun, error) {
+	c := *cfg
+	c.links = links
+	return runLinks(ctx, &c, m.apiClient(), newDownloadHTTPClient())
 }
 
 func mustEqualFile(t *testing.T, path string, want []byte) {
@@ -605,7 +639,7 @@ func TestOutOfOrderFoldMatchesSequential(t *testing.T) {
 
 	fk := &fileKey{aes: key, nonce: nonce}
 	st := &fileState{Size: int64(len(data)), Chunks: planChunks(int64(len(data)), 2<<20)}
-	j := &job{e: &engine{ctl: &controlFile{data: ctlData{Files: map[string]*fileState{}}}}, st: st, n: &node{key: fk}}
+	j := &job{e: &engine{}, lk: &linkRun{ctl: &controlFile{data: ctlData{Files: map[string]*fileState{}}}}, st: st, n: &node{key: fk}}
 	j.fold, _ = aes.NewCipher(key[:])
 
 	order := rng.Perm(len(st.Chunks))

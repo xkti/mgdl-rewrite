@@ -13,7 +13,6 @@ import (
 	"os"
 	"os/signal"
 	"strings"
-	"sync"
 	"syscall"
 	"time"
 )
@@ -78,183 +77,26 @@ func cli(argv []string) int {
 	api := newAPIClient(newAPIHTTPClient(), cfg.retries)
 	dl := newDownloadHTTPClient()
 
-	var total runStats
-	failedLinks := 0
-	for i, raw := range cfg.links {
-		if ctx.Err() != nil {
-			break
-		}
-		if len(cfg.links) > 1 {
-			if i > 0 {
-				fmt.Println()
-			}
-			infof("[%d/%d] %s", i+1, len(cfg.links), raw)
-		}
-		st, err := processLink(ctx, cfg, api, dl, raw)
-		total.completed += st.completed
-		total.verified += st.verified
-		total.skipped += st.skipped
-		total.failed += st.failed
-		total.bytes += st.bytes
-		total.elapsed += st.elapsed
-		if err != nil {
-			if errors.Is(err, context.Canceled) {
-				break
-			}
-			failedLinks++
-			fmt.Fprintf(os.Stderr, "mgdl: %v\n", err)
+	st, runs, err := runLinks(ctx, cfg, api, dl)
+	if len(runs) > 1 && !cfg.list && !cfg.dryRun {
+		fmt.Println()
+		for _, line := range linkReport(runs) {
+			fmt.Println(line)
 		}
 	}
-
-	if ctx.Err() != nil {
+	if errors.Is(err, context.Canceled) {
 		fmt.Fprintln(os.Stderr, "\ninterrupted — progress saved, run the same command again to resume")
 		return 130
 	}
-	if len(cfg.links) > 1 && !cfg.list && !cfg.dryRun {
-		fmt.Printf("\nAll links: %d downloaded (%d verified), %d already present, %d failed; %s in %s\n",
-			total.completed, total.verified, total.skipped, total.failed,
-			formatBytes(total.bytes), formatDuration(total.elapsed))
+	// Errors were printed as they happened, except files that failed during the
+	// download: for a single link, list them here (with several, the report says).
+	if len(runs) == 1 && runs[0].status == statusPartial {
+		fmt.Fprintf(os.Stderr, "mgdl: %v\n", runs[0].err)
 	}
-	if failedLinks > 0 || total.failed > 0 {
+	if err != nil || st.failed > 0 {
 		return 1
 	}
 	return 0
-}
-
-// processLink resolves one link and lists, dry-runs, or downloads it.
-func processLink(ctx context.Context, cfg *config, api *apiClient, hc *http.Client, raw string) (runStats, error) {
-	l, err := parseLink(raw)
-	if err != nil {
-		return runStats{}, err
-	}
-	t, err := resolve(ctx, api, l)
-	if err != nil {
-		return runStats{}, fmt.Errorf("%s: %w", raw, err)
-	}
-	files, err := t.selectPaths(cfg.paths)
-	if err != nil {
-		return runStats{}, err
-	}
-	if cfg.selectTUI && t.root.isDir {
-		files, err = runSelector(t, files)
-		if errors.Is(err, errSelectCancelled) {
-			infof("%s: selection cancelled, skipping", t.title())
-			return runStats{}, nil
-		}
-		if err != nil {
-			return runStats{}, err
-		}
-	}
-	if cfg.list {
-		printTree(os.Stdout, t, cfg.verbose)
-		for _, note := range renameNotes(t, t.files) {
-			noticef("%s", note)
-		}
-		return runStats{}, nil
-	}
-	for _, note := range renameNotes(t, files) {
-		noticef("%s", note)
-	}
-	if len(files) == 0 {
-		infof("%s: nothing selected", t.title())
-		return runStats{}, nil
-	}
-	ctl, err := loadControl(t.baseDir(cfg.output), l.handle())
-	if err != nil {
-		return runStats{}, err
-	}
-	space := checkLinkSpace(cfg, t, ctl, files)
-	if cfg.dryRun {
-		dryRun(cfg, t, ctl, files, space)
-		return runStats{}, nil
-	}
-	if err := checkModes(cfg, t, ctl, files); err != nil {
-		return runStats{}, err
-	}
-	var guard *spaceGuard
-	switch {
-	case cfg.noSpaceCheck:
-	case space.err != nil:
-		warnf("cannot determine free space in %s (%v); not checking it", space.dir, space.err)
-	case space.short():
-		return runStats{}, space.asError()
-	default:
-		debugf("space: %s to download, %s free in %s", formatBytes(space.need), formatBytes(space.free), space.dir)
-		guard = newSpaceGuard(space.dir)
-	}
-	return downloadLink(ctx, cfg, api, hc, t, ctl, files, guard)
-}
-
-// downloadLink runs the file worker pool for one link.
-func downloadLink(ctx context.Context, cfg *config, api *apiClient, hc *http.Client,
-	t *tree, ctl *controlFile, files []*node, space *spaceGuard) (runStats, error) {
-
-	prog := newProgress(t.title(), files, cfg.jobs)
-	e := &engine{cfg: cfg, api: api, http: hc, lim: newRateLimiter(cfg.limitRate), tree: t, ctl: ctl, prog: prog, space: space}
-
-	// The saver outlives ctx so the final checkpoint is written after Ctrl+C.
-	saveCtx, stopSaver := context.WithCancel(context.Background())
-	saverDone := make(chan struct{})
-	go func() { ctl.run(saveCtx); close(saverDone) }()
-
-	prog.start(ctx)
-
-	jobs := make(chan *node)
-	go func() {
-		defer close(jobs)
-		for _, n := range files {
-			select {
-			case jobs <- n:
-			case <-ctx.Done():
-				return
-			}
-		}
-	}()
-
-	var mu sync.Mutex
-	var failures []string
-	var wg sync.WaitGroup
-	for i := range prog.slots {
-		wg.Add(1)
-		go func(s *slot) {
-			defer wg.Done()
-			for n := range jobs {
-				res, err := e.fetchFile(ctx, n, s)
-				s.clear()
-				switch {
-				case err == nil && res == resSkipped:
-					prog.fileSkipped(n.size)
-				case err == nil:
-					prog.fileDone(n.size, res == resVerified)
-				case errors.Is(err, context.Canceled):
-					return
-				default:
-					prog.fileFailed(n.size)
-					infof("%s  %s: %v", colour("31", "FAILED  "), n.relPath, err)
-					mu.Lock()
-					failures = append(failures, n.relPath)
-					mu.Unlock()
-				}
-			}
-		}(prog.slots[i])
-	}
-	wg.Wait()
-	prog.stop()
-
-	stopSaver()
-	<-saverDone
-	if err := ctl.save(); err != nil {
-		warnf("saving control file: %v", err)
-	}
-
-	if ctx.Err() != nil {
-		return runStats{}, context.Canceled
-	}
-	st := prog.summary()
-	if len(failures) > 0 {
-		return st, fmt.Errorf("%d file(s) failed: %s", len(failures), strings.Join(failures, ", "))
-	}
-	return st, nil
 }
 
 // dryRun reports what a download would do, without transferring or writing anything.

@@ -320,6 +320,10 @@ their final name only once complete and verified. Progress is saved in a control
 file (.mgdl-HANDLE, beside the file or at the top of the folder) so an interrupted
 run resumes where it stopped: just run the same command again.
 
+Several links download together, sharing the -j file slots. Folders with the
+same name are merged; if two links have a file with the same name, both are kept
+and the later one gets its MEGA handle added to its name.
+
 When stdout is not a terminal, the live dashboard is replaced by periodic status
 lines. Sizes use binary units (1 MiB = 1024 KiB).
 `, version, defaultProxyList())

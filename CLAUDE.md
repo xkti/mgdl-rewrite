@@ -37,11 +37,12 @@ Tests are hermetic (`e2e_test.go` runs a fake API + storage + proxy with
 
 | File | Responsibility |
 |---|---|
-| `main.go` | Entry, signal handling, per-link orchestration (`processLink`, `downloadLink`, `dryRun`), HTTP clients. |
+| `main.go` | Entry, signal handling, exit codes, `dryRun`, HTTP clients. |
+| `run.go` | A run over all links: `planLinks` (resolve, repeat links, `mergeTrees`, select, control files, checks, `checkSpace`), `downloadAll` (one queue + dashboard), `linkReport`. |
 | `args.go` | Hand-rolled flag parsing (short/long, bundling, repeatable `-p`), usage text, `-i` link files. |
 | `link.go` | Parsing of modern, subfolder/file-in-folder and legacy links. |
 | `api.go` | MEGA API client: batching, seq ids, error codes, transient retries. |
-| `nodes.go` | Folder listing → decrypted tree; key selection from multi-share `k`; name sanitising and de-duplication; `-p` matching; `--list` output. |
+| `nodes.go` | Folder listing → decrypted tree; key selection from multi-share `k`; name sanitising and de-duplication (within a link: `finishTree`; across links: `mergeTrees`); `-p` matching; `--list` output. |
 | `crypto.go` | Key unpacking, attribute decryption, CTR IV for an offset, MAC chunk geometry, streaming `macStream`, `metaFold`, `condense`. |
 | `state.go` | The control file (`.mgdl-HANDLE`), chunk planning. |
 | `download.go` | Per-file job: prepare/reconcile state, parallel or sequential chunk workers, per-attempt fetch with decrypt+MAC+checkpoint, retry/throttle/stall logic, MAC check, `--verify-existing`. |
@@ -65,6 +66,14 @@ Tests are hermetic (`e2e_test.go` runs a fake API + storage + proxy with
 - **Meta-MAC fold is strictly in order.** `job.record` folds only through the
   leading run of chunks; MACs of chunks that finished early wait in `chunkState.MACs`
   (persisted). Tested with a randomised completion order.
+- **All links run as one.** Every link is planned (resolved, selected, checked) in
+  command-line order before any file data moves; then all selected files share one
+  queue, `-j` workers, one dashboard and one summary, followed by `linkReport` (one
+  line per group of same-named links) when there are several. A link that fails to
+  plan is reported and dropped; the rest go ahead. A link whose handle an earlier,
+  successfully resolved link already had is skipped as a repeat (it would share
+  the control file). Same-named files in different links are **not** de-duplicated:
+  both are downloaded, as below.
 - **One control file per link**, all mutation through `controlFile.update` (one
   mutex), saved atomically (tmp + rename) every 2s and on exit, removed when empty.
 - **Final name means verified.** Data goes to `NAME.part`; rename only after the
@@ -72,8 +81,8 @@ Tests are hermetic (`e2e_test.go` runs a fake API + storage + proxy with
   `-r` (3 when `-r 0`).
 - **Free space is checked, sparse files are used** (`space.go`, `disk_*.go`). Up
   front: the selection's remaining need (`fileNeed`: 0 if complete, size − done if
-  resumable) plus headroom (1 MiB + 0.5%) must fit, or the link stops before any
-  request. Per file at start (`spaceGuard.claim`): its need plus what in-flight files
+  resumable) plus headroom (1 MiB + 0.5%) must fit, summed over all links landing on
+  the same filesystem directory, or those links stop before any request. Per file at start (`spaceGuard.claim`): its need plus what in-flight files
   still have to write (`spaceNeed − spaceWritten`, updated in `record`). A shortfall
   is a `localError` (no retries). Unknown free space warns and skips the check;
   `--no-space-check` disables it. Real preallocation was benchmarked and rejected:
@@ -106,6 +115,9 @@ Tests are hermetic (`e2e_test.go` runs a fake API + storage + proxy with
   Windows-reserved names/characters). Duplicate sibling names (case-insensitive)
   get `_HANDLE` before the extension (`withHandle`); the first in sort order keeps
   its name, and generated names count as taken so nothing can collide.
+  Across links (`mergeTrees`, over whole trees so names don't depend on the
+  selection): same-named folders merge; any other clash gets `_HANDLE` on the later
+  link's item, both are marked `node.dup`, and the rename is a notice, not a warning.
   `sanitize` returns the reason; every rename among the selected files (all files
   with `--list`) is reported on **stderr** via `noticef`, never stdout.
 - **Piped stdout:** no cursor movement; plain timestamped lines, status every 10s.

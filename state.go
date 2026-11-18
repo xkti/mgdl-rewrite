@@ -233,8 +233,9 @@ func (c *controlFile) save() error {
 	return os.Rename(tmp, c.path)
 }
 
-// run saves periodically until ctx ends, then once more.
-func (c *controlFile) run(ctx context.Context) {
+// saveLoop saves every control file periodically until ctx ends. The caller saves
+// once more afterwards, so the last checkpoints are kept.
+func saveLoop(ctx context.Context, ctls []*controlFile) {
 	t := time.NewTicker(ctlSaveInterval)
 	defer t.Stop()
 	for {
@@ -242,8 +243,10 @@ func (c *controlFile) run(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-t.C:
-			if err := c.save(); err != nil {
-				warnf("saving control file: %v", err)
+			for _, c := range ctls {
+				if err := c.save(); err != nil {
+					warnf("saving control file: %v", err)
+				}
 			}
 		}
 	}
