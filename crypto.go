@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"crypto/aes"
 	"crypto/cipher"
 	"encoding/base64"
@@ -9,7 +10,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"strings"
+	"sync"
 )
 
 // MEGA encrypts every file with AES-128 in CCM-like fashion: CTR mode for
@@ -206,6 +209,13 @@ func newMACStream(key [16]byte, nonce [8]byte, start, size int64) *macStream {
 	return m
 }
 
+// seek repositions the stream at start, a MAC boundary, dropping any chunk in
+// progress, so one stream (and its scratch buffer) can compute many chunk MACs.
+func (m *macStream) seek(start int64) {
+	m.pos, m.lastBoundary = start, start
+	m.resetChunk()
+}
+
 func (m *macStream) resetChunk() {
 	var iv [16]byte
 	copy(iv[:8], m.nonce[:])
@@ -277,6 +287,95 @@ func (m *macStream) Write(p []byte) [][16]byte {
 		}
 	}
 	return done
+}
+
+// fileMeta computes the meta-MAC of a whole file read from r (--verify-existing).
+// MAC chunks are independent CBC chains, so up to workers of them are read and
+// MACed at once; only the fold over their MACs is serial, done here strictly in
+// file order. progress gets the size of each chunk once it is MACed (from the
+// workers, so it must be safe for concurrent use). A file shorter than size is an
+// error, not a mismatch.
+func fileMeta(ctx context.Context, r io.ReaderAt, size int64, key [16]byte, nonce [8]byte, workers int, progress func(int64)) ([16]byte, error) {
+	type result struct {
+		mac [16]byte
+		err error
+	}
+	type piece struct {
+		start, end int64
+		out        chan result
+	}
+	ctx, cancel := context.WithCancel(ctx)
+	var wg sync.WaitGroup
+	defer func() {
+		cancel()
+		wg.Wait() // nobody touches r once we return
+	}()
+	workers = max(workers, 1)
+	jobs := make(chan piece)
+	// order holds each piece's result channel in file order; its capacity bounds
+	// how far the workers may run ahead of the fold.
+	order := make(chan chan result, 2*workers)
+
+	wg.Go(func() {
+		defer close(jobs)
+		defer close(order)
+		for s := int64(0); s < size; {
+			e := min(macChunkEnd(s), size)
+			out := make(chan result, 1)
+			select {
+			case order <- out:
+			case <-ctx.Done():
+				return
+			}
+			select {
+			case jobs <- piece{s, e, out}:
+			case <-ctx.Done():
+				return
+			}
+			s = e
+		}
+	})
+	for range workers {
+		wg.Go(func() {
+			m := newMACStream(key, nonce, 0, size)
+			buf := make([]byte, macSteadyStep) // the largest MAC chunk
+			for p := range jobs {
+				if ctx.Err() != nil {
+					p.out <- result{err: ctx.Err()}
+					continue
+				}
+				b := buf[:p.end-p.start]
+				if n, err := r.ReadAt(b, p.start); n < len(b) {
+					if err == io.EOF {
+						err = io.ErrUnexpectedEOF
+					}
+					p.out <- result{err: fmt.Errorf("reading at %d: %w", p.start, err)}
+					continue
+				}
+				m.seek(p.start)
+				macs := m.Write(b)
+				p.out <- result{mac: macs[0]} // b is exactly one MAC chunk
+				progress(int64(len(b)))
+			}
+		})
+	}
+
+	fold := newMetaFold(key, [16]byte{})
+	for out := range order {
+		select {
+		case res := <-out:
+			if res.err != nil {
+				return [16]byte{}, res.err
+			}
+			fold.add(res.mac)
+		case <-ctx.Done():
+			return [16]byte{}, ctx.Err()
+		}
+	}
+	if err := ctx.Err(); err != nil {
+		return [16]byte{}, err
+	}
+	return fold.state, nil
 }
 
 // metaFold is the running second-level CBC over chunk MACs (zero IV).

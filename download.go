@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -747,30 +748,19 @@ func (j *job) verifyOnDisk(ctx context.Context, path string) (bool, error) {
 	defer f.Close()
 	j.row.begin(n.name, 0, n.size)
 	j.row.setNote("verifying")
-	mac := newMACStream(n.key.aes, n.key.nonce, 0, n.size)
-	fold := newMetaFold(n.key.aes, [16]byte{})
-	buf := make([]byte, 1<<20)
-	for {
-		if ctx.Err() != nil {
-			return false, ctx.Err()
-		}
-		nr, err := f.Read(buf)
-		if nr > 0 {
-			for _, m := range mac.Write(buf[:nr]) {
-				fold.add(m)
-			}
-			j.row.advance(int64(nr))
-			j.row.setNote("verifying")
-		}
-		if err == io.EOF {
-			break
-		}
-		if err != nil {
-			return false, err
-		}
+	meta, err := fileMeta(ctx, f, n.size, n.key.aes, n.key.nonce, verifyWorkers(), func(k int64) {
+		j.row.advance(k)
+		j.row.setNote("verifying")
+	})
+	if err != nil {
+		return false, err
 	}
-	return condense(fold.state) == n.key.mac, nil
+	return condense(meta) == n.key.mac, nil
 }
+
+// verifyWorkers is how many MAC chunks --verify-existing checks at once per file:
+// one per CPU, capped so a slow disk isn't swamped with scattered reads.
+func verifyWorkers() int { return min(runtime.GOMAXPROCS(0), 8) }
 
 // pickProxy chooses a proxy at random for each attempt ("" = direct).
 func (e *engine) pickProxy() string {

@@ -2,9 +2,13 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"crypto/aes"
 	"crypto/cipher"
+	"errors"
+	"io"
 	"math/rand"
+	"sync/atomic"
 	"testing"
 )
 
@@ -192,3 +196,42 @@ func encryptAttrs(key []byte, name string) string {
 
 // isMACBoundary reports whether x starts a MAC chunk.
 func isMACBoundary(x int64) bool { return macBoundaryAtOrAfter(x) == x }
+
+// fileMeta MACs chunks in parallel and out of order; the fold must still match
+// the reference for every worker count, including sizes around the boundaries.
+func TestFileMetaMatchesReference(t *testing.T) {
+	rng := rand.New(rand.NewSource(4))
+	var key [16]byte
+	var nonce [8]byte
+	rng.Read(key[:])
+	rng.Read(nonce[:])
+	for _, size := range []int{0, 1, 17, macChunkBase, macChunkBase + 1, macSteadyStart, macSteadyStart + 5, 9<<20 + 7} {
+		data := make([]byte, size)
+		rng.Read(data)
+		want := refMeta(key, nonce, data)
+		for _, w := range []int{1, 3, 8} {
+			var seen atomic.Int64
+			got, err := fileMeta(context.Background(), bytes.NewReader(data), int64(size), key, nonce, w, func(n int64) { seen.Add(n) })
+			if err != nil || got != want {
+				t.Fatalf("size %d, %d workers: %x, %v; reference %x", size, w, got, err, want)
+			}
+			if seen.Load() != int64(size) {
+				t.Fatalf("size %d, %d workers: progress %d", size, w, seen.Load())
+			}
+		}
+	}
+}
+
+func TestFileMetaShortAndCancelled(t *testing.T) {
+	var key [16]byte
+	var nonce [8]byte
+	data := make([]byte, 6<<20)
+	if _, err := fileMeta(context.Background(), bytes.NewReader(data[:5<<20]), int64(len(data)), key, nonce, 4, func(int64) {}); !errors.Is(err, io.ErrUnexpectedEOF) {
+		t.Fatalf("short file: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := fileMeta(ctx, bytes.NewReader(data), int64(len(data)), key, nonce, 4, func(int64) {}); !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancelled: %v", err)
+	}
+}

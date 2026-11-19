@@ -43,7 +43,7 @@ Tests are hermetic (`e2e_test.go` runs a fake API + storage + proxy with
 | `link.go` | Parsing of modern, subfolder/file-in-folder and legacy links. |
 | `api.go` | MEGA API client: batching, seq ids, error codes, transient retries. |
 | `nodes.go` | Folder listing → decrypted tree; key selection from multi-share `k`; name sanitising and de-duplication (within a link: `finishTree`; across links: `mergeTrees`); `-p` matching; `--list` output. |
-| `crypto.go` | Key unpacking, attribute decryption, CTR IV for an offset, MAC chunk geometry, streaming `macStream`, `metaFold`, `condense`. |
+| `crypto.go` | Key unpacking, attribute decryption, CTR IV for an offset, MAC chunk geometry, streaming `macStream`, parallel whole-file `fileMeta` (`--verify-existing`), `metaFold`, `condense`. |
 | `state.go` | The control file (`.mgdl-HANDLE`), chunk planning. |
 | `space.go` | Free-space check: `fileNeed`, `spaceFor` (up front, per filesystem directory), `spaceGuard` (per file at start). |
 | `disk_*.go` | Free space and `markSparse`, per platform. |
