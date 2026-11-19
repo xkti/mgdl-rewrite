@@ -74,7 +74,7 @@ func TestSameNamedFoldersMerge(t *testing.T) {
 	if !strings.Contains(strings.Join(renameNotes(runs[1].tree, runs[1].files), "\n"), "Pack/A.TXT → A_FiLeA2a2.TXT  (duplicate") {
 		t.Fatalf("notes: %q", renameNotes(runs[1].tree, runs[1].files))
 	}
-	report := strings.Join(linkReport(runs), "\n")
+	report := strings.Join(linkReport(runs, 0), "\n")
 	if !strings.Contains(report, "Links: 2 done") || !strings.Contains(report, "Pack (2 links)  done") {
 		t.Fatalf("report:\n%s", report)
 	}
@@ -112,7 +112,7 @@ func TestRepeatedAndBrokenLinks(t *testing.T) {
 			t.Fatalf("link %d: status %v, want %v", i+1, lr.status, want[i])
 		}
 	}
-	report := linkReport(runs)
+	report := linkReport(runs, 0)
 	if report[0] != "Links: 1 done, 1 couldn't be opened, 1 skipped" {
 		t.Fatalf("report header %q", report[0])
 	}
@@ -121,11 +121,11 @@ func TestRepeatedAndBrokenLinks(t *testing.T) {
 	}
 	// A reason shared by every link in a group is shown; mixed ones aren't.
 	same := []*linkRun{{status: statusSkipped, note: "selection cancelled"}, {status: statusSkipped, note: "selection cancelled"}}
-	if got := groupOutcome(same); got != "skipped (selection cancelled)" {
+	if _, got := groupOutcome(same); got != "skipped (selection cancelled)" {
 		t.Fatalf("shared reason: %q", got)
 	}
 	same[1].note = "nothing selected"
-	if got := groupOutcome(same); got != "skipped" {
+	if _, got := groupOutcome(same); got != "skipped" {
 		t.Fatalf("mixed reasons: %q", got)
 	}
 	if !strings.Contains(report[2], "link 3") || !strings.Contains(report[2], "couldn't be opened: ") {
@@ -144,7 +144,7 @@ func TestPartialLinkInReport(t *testing.T) {
 	if err == nil || runs[0].status != statusDone || runs[1].status != statusPartial {
 		t.Fatalf("err %v, statuses %v %v", err, runs[0].status, runs[1].status)
 	}
-	if line := linkReport(runs)[2]; !strings.Contains(line, "1 of 1 files failed") {
+	if line := linkReport(runs, 0)[2]; !strings.Contains(line, "1 of 1 files failed") {
 		t.Fatalf("report line %q", line)
 	}
 }
@@ -449,4 +449,31 @@ func TestSpaceCheckedForExistingFolders(t *testing.T) {
 	}
 	mustEqualFile(t, filepath.Join(out, "Alpha", "a.bin"), a.plain)
 	mustEqualFile(t, filepath.Join(out, "Beta", "b.bin"), b.plain)
+}
+
+// The report's names are cut only as far as the terminal needs, outcomes line up,
+// and piped output (no width) is never cut.
+func TestLinkReportWidth(t *testing.T) {
+	long := strings.Repeat("x", 60)
+	runs := []*linkRun{
+		{idx: 1, status: statusDone, tree: &tree{root: &node{name: long, isDir: true}}},
+		{idx: 2, status: statusDone, tree: &tree{root: &node{name: "short", isDir: true}}},
+	}
+	piped := linkReport(runs, 0)
+	if piped[1] != "  "+long+"  done" || piped[2] != "  short"+strings.Repeat(" ", 55)+"  done" {
+		t.Fatalf("piped:\n%s", strings.Join(piped, "\n"))
+	}
+	wide := linkReport(runs, 200)
+	if wide[1] != piped[1] {
+		t.Fatalf("wide terminal cut a name: %q", wide[1])
+	}
+	narrow := linkReport(runs, 40)
+	for _, ln := range narrow[1:] {
+		if dispWidth(ln) != 39 || !strings.HasSuffix(ln, "  done") {
+			t.Fatalf("narrow line %q (%d columns)", ln, dispWidth(ln))
+		}
+	}
+	if !strings.Contains(narrow[1], "…") {
+		t.Fatalf("narrow: long name not cut: %q", narrow[1])
+	}
 }

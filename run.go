@@ -617,7 +617,7 @@ func displayPath(lr *linkRun, n *node, multi bool) string {
 	return n.relPath
 }
 
-// runTitle heads the dashboard and summary. Links with the same local name are one
+// runTitle heads the dashboard (and a single link's summary). Links with the same local name are one
 // group, as their files land in the same place.
 func runTitle(runs []*linkRun) string {
 	names := groupNames(runs)
@@ -659,8 +659,10 @@ var statusWords = map[linkStatus]string{
 var reportOrder = []linkStatus{statusDone, statusPartial, statusInterrupted, statusNotStarted, statusFailed, statusSkipped}
 
 // linkReport is the closing per-link report for a run with several links: a count
-// of links by outcome, then one line per group of links sharing a local name.
-func linkReport(runs []*linkRun) []string {
+// per status, then one line per group of same-named links with how it ended.
+// Names are cut only as far as needed to keep each line within cols columns
+// (0: no limit, as when piped), and the outcomes line up after the longest.
+func linkReport(runs []*linkRun, cols int) []string {
 	counts := map[linkStatus]int{}
 	type group struct {
 		label string
@@ -691,24 +693,38 @@ func linkReport(runs []*linkRun) []string {
 	}
 	lines := []string{"Links: " + strings.Join(head, ", ")}
 
-	labelW := 0
+	const indent, gap = 2, 2
 	labels := make([]string, len(groups))
+	status := make([]linkStatus, len(groups))
+	outcomes := make([]string, len(groups))
+	labelW, outW := 0, 0
 	for i, g := range groups {
 		labels[i] = g.label
 		if len(g.runs) > 1 {
 			labels[i] += fmt.Sprintf(" (%d links)", len(g.runs))
 		}
-		labelW = max(labelW, min(dispWidth(labels[i]), 40))
+		status[i], outcomes[i] = groupOutcome(g.runs)
+		labelW = max(labelW, dispWidth(labels[i]))
+		outW = max(outW, dispWidth(outcomes[i]))
 	}
-	for i, g := range groups {
-		lines = append(lines, fmt.Sprintf("  %s  %s", padRight(truncate(labels[i], 40), labelW), groupOutcome(g.runs)))
+	if cols > 0 {
+		// The last column stays free so no line wraps.
+		labelW = max(minNameW, min(labelW, cols-1-indent-gap-outW))
+	}
+	for i := range groups {
+		out := outcomes[i]
+		if cols > 0 {
+			out = truncate(out, cols-1-indent-gap-labelW) // a long reason on a narrow terminal
+		}
+		lines = append(lines, fmt.Sprintf("%*s%s%*s%s", indent, "", padRight(labels[i], labelW), gap, "", colourStatus(status[i], out)))
 	}
 	return lines
 }
 
 // groupOutcome describes how a group of links ended: the shared status with its
-// detail, or a count per status when they differ.
-func groupOutcome(runs []*linkRun) string {
+// detail, or a count per status when they differ (reported as the worst status,
+// which picks the colour).
+func groupOutcome(runs []*linkRun) (linkStatus, string) {
 	first := runs[0].status
 	same := true
 	for _, lr := range runs {
@@ -725,7 +741,7 @@ func groupOutcome(runs []*linkRun) string {
 				parts = append(parts, fmt.Sprintf("%d %s", counts[s], statusWords[s]))
 			}
 		}
-		return colourStatus(worstStatus(runs), strings.Join(parts, ", "))
+		return worstStatus(runs), strings.Join(parts, ", ")
 	}
 	word := statusWords[first]
 	switch first {
@@ -752,7 +768,7 @@ func groupOutcome(runs []*linkRun) string {
 			word += ": " + note
 		}
 	}
-	return colourStatus(first, word)
+	return first, word
 }
 
 func worstStatus(runs []*linkRun) linkStatus {

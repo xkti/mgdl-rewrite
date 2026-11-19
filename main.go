@@ -83,9 +83,26 @@ func cli(argv []string) int {
 	if errors.Is(err, errSelectCancelled) {
 		return 0 // the picker said so; there is nothing to report
 	}
+	// One link: its name over the totals. Several: a line per link, then the
+	// totals for all of them.
 	if len(runs) > 1 && !cfg.list && !cfg.dryRun {
+		cols := 0 // piped: nothing is cut
+		if con.tty {
+			cols = terminalWidth()
+		}
 		fmt.Println()
-		for _, line := range linkReport(runs) {
+		for _, line := range linkReport(runs, cols) {
+			fmt.Println(line)
+		}
+		if st.ran {
+			fmt.Println()
+			for _, line := range st.lines("") {
+				fmt.Println(line)
+			}
+		}
+	} else if st.ran {
+		fmt.Printf("\n%s\n", runTitle(runs))
+		for _, line := range st.lines("  ") {
 			fmt.Println(line)
 		}
 	}

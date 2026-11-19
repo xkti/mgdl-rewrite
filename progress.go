@@ -489,30 +489,39 @@ func (p *progress) renderLocked() {
 	p.lastLines = len(lines)
 }
 
-// runStats is a link's outcome, accumulated into the multi-link total.
+// runStats is a run's outcome. ran is false when no download took place (nothing
+// queued, or interrupted), so there are no totals to print.
 type runStats struct {
 	completed, verified, skipped, failed int
 	bytes                                int64
 	elapsed                              time.Duration
+	avgSpeed                             float64
+	ran                                  bool
 }
 
-// summary prints the closing report and returns the figures.
+// summary returns the closing figures; main prints them (lines) after the
+// per-link report, if there is one.
 func (p *progress) summary() runStats {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	st := runStats{p.completed, p.verified, p.skipped, p.failed, p.sessionB.Load(), time.Since(p.started)}
-	fmt.Printf("\n%s\n", p.title)
-	fmt.Printf("  %d downloaded", p.completed)
-	if p.verified > 0 {
-		fmt.Printf(" (%d verified)", p.verified)
+	return runStats{p.completed, p.verified, p.skipped, p.failed, p.sessionB.Load(), time.Since(p.started), p.avgSpeed(), true}
+}
+
+// lines are the run's totals in plain words, indented by indent.
+func (st runStats) lines(indent string) []string {
+	files := fmt.Sprintf("%d downloaded", st.completed)
+	if st.verified > 0 {
+		files += fmt.Sprintf(" (%d verified)", st.verified)
 	}
-	fmt.Printf(", %d already present", p.skipped)
-	if p.failed > 0 {
-		fmt.Printf(", %s", colour("31", fmt.Sprintf("%d failed", p.failed)))
+	files += fmt.Sprintf(", %d already present", st.skipped)
+	if st.failed > 0 {
+		files += ", " + colour("31", fmt.Sprintf("%d failed", st.failed))
 	}
-	fmt.Printf("\n  %s transferred in %s (%s average)\n",
-		formatBytes(st.bytes), formatDuration(st.elapsed), formatSpeed(p.avgSpeed()))
-	return st
+	return []string{
+		indent + files,
+		fmt.Sprintf("%s%s transferred in %s (%s average)", indent,
+			formatBytes(st.bytes), formatDuration(st.elapsed), formatSpeed(st.avgSpeed)),
+	}
 }
 
 func failedSuffix(failed int) string {
