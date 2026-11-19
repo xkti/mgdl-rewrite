@@ -20,6 +20,7 @@ Needs Go 1.26+. Dependencies: `golang.org/x/term` and `golang.org/x/sys` only.
 mgdl https://mega.nz/file/ID#KEY                     # a file
 mgdl https://mega.nz/folder/ID#KEY                   # a folder, into ./FolderName/
 mgdl https://mega.nz/folder/ID#KEY/folder/HANDLE     # just a subfolder
+mgdl https://mega.nz/folder/ID#KEY/file/HANDLE       # one file from a folder
 mgdl -l https://mega.nz/folder/ID#KEY                # list the tree and exit
 mgdl -p 'Season 1' -p extras/notes.txt LINK          # only these paths
 mgdl -s LINK                                         # pick files interactively
@@ -27,6 +28,8 @@ mgdl -n LINK                                         # dry run: what would happe
 mgdl -C 128M -c 8 -o /mnt/media LINK                 # smaller chunks, more connections
 mgdl -i links.txt                                    # many links, one per line
 ```
+
+Legacy links (`https://mega.nz/#!ID!KEY`, `https://mega.nz/#F!ID!KEY`) work too.
 
 Interrupted? Run the same command again and it picks up where it stopped.
 
@@ -36,7 +39,7 @@ Interrupted? Run the same command again and it picks up where it stopped.
 | `-j, --jobs N` | `4` | Files downloaded at once. |
 | `-c, --connections N` | `4` | Connections per file (chunks fetched in parallel). |
 | `-C, --chunk-size SIZE` | `256M` | Bytes per request; `K/M/G` are binary (1024). Min `128M`. |
-| `--sequential` | off | One chunk at a time per file, no preallocation. |
+| `--sequential` | off | One chunk at a time per file, no preallocation. Can't resume a partial started in parallel. |
 | `-r, --retries N` | `5` | Attempts per chunk; `0` = forever. Resets after real progress. |
 | `-x, --proxy LIST` | 4 built-in Workers | Comma-separated proxy domains, picked at random per request. |
 | `--direct` | off | Skip the proxy. |
@@ -51,6 +54,8 @@ Interrupted? Run the same command again and it picks up where it stopped.
 | `--no-space-check` | | Don't check free disk space before downloading. |
 | `-v, --verbose` | | Log every stage to stderr. `MGDL_DEBUG=1` does the same. |
 | `--log FILE` | | Also write detailed logs to a file. |
+| `-V, --version` | | Print the version. |
+| `-h, --help` | | Show the help. |
 
 ## How it works
 
@@ -76,7 +81,8 @@ Interrupted? Run the same command again and it picks up where it stopped.
   soon as a slot is free instead of waiting for the previous link's slowest file.
   Folders with the same name merge into one; when two links have a file (or a file
   and a folder) with the same name, both are kept and the later link's one gets
-  `_HANDLE` added, with a notice. A closing report lists how each link went.
+  `_HANDLE` added, with a notice. At the end, a report lists how each link went,
+  followed by the totals for the whole run.
 - **Disk space** is checked before anything starts: if what the selection (across
   all links) still needs (counting only what's left of partial downloads) doesn't fit, mgdl stops
   and says how much is missing. Each file is re-checked as it starts, allowing for
@@ -91,7 +97,8 @@ Interrupted? Run the same command again and it picks up where it stopped.
   folder is already where a download should go, it is left alone and the download
   is saved beside it with `_HANDLE` added.
 - **Output**: a live dashboard on a terminal; plain timestamped status lines every
-  10s when stdout is piped or redirected. A finished download prints `done`: green
+  10s when stdout is piped or redirected. The per-link report and the dry run's
+  file list fit long names to the terminal width, and never cut them when piped. A finished download prints `done`: green
   if it was verified, yellow if it couldn't be (part of it was downloaded with
   `--no-verify`; run `--verify-existing` later to check it), plain with
   `--no-verify`. With `--verify-existing`, a file already on disk that checks out

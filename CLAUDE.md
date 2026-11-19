@@ -37,7 +37,7 @@ Tests are hermetic (`e2e_test.go` runs a fake API + storage + proxy with
 
 | File | Responsibility |
 |---|---|
-| `main.go` | Entry, signal handling, exit codes, `dryRun`, HTTP clients. |
+| `main.go` | Entry, signal handling, exit codes, the closing report and totals, `dryRun`, HTTP clients. |
 | `run.go` | A run over all links: `planLinks` (resolve, repeat links, `mergeTrees`, select, control files, checks, `checkSpace`), `downloadAll` (one queue + dashboard), `linkReport`. |
 | `args.go` | Hand-rolled flag parsing (short/long, bundling, repeatable `-p`), usage text, `-i` link files. |
 | `link.go` | Parsing of modern, subfolder/file-in-folder and legacy links. |
@@ -45,12 +45,15 @@ Tests are hermetic (`e2e_test.go` runs a fake API + storage + proxy with
 | `nodes.go` | Folder listing → decrypted tree; key selection from multi-share `k`; name sanitising and de-duplication (within a link: `finishTree`; across links: `mergeTrees`); `-p` matching; `--list` output. |
 | `crypto.go` | Key unpacking, attribute decryption, CTR IV for an offset, MAC chunk geometry, streaming `macStream`, `metaFold`, `condense`. |
 | `state.go` | The control file (`.mgdl-HANDLE`), chunk planning. |
+| `space.go` | Free-space check: `fileNeed`, `spaceFor` (up front, per filesystem directory), `spaceGuard` (per file at start). |
+| `disk_*.go` | Free space and `markSparse`, per platform. |
 | `download.go` | Per-file job: prepare/reconcile state, parallel or sequential chunk workers, per-attempt fetch with decrypt+MAC+checkpoint, retry/throttle/stall logic, MAC check, `--verify-existing`. |
-| `progress.go` | Dashboard (ported from dl) / plain-mode status lines, summary. |
+| `progress.go` | Dashboard (ported from dl) / plain-mode status lines; `summary` collects the closing figures (`runStats`, printed by `main` via `lines`). |
 | `log.go` | `infof`/`warnf`/`debugf`; erases and redraws the dashboard around each line. |
 | `select.go` | `--select` picker for all links at once (raw mode, alternate screen): sections fill in as links load, same-named folders merged, duplicates yellow. |
 | `term*.go` | TTY detection, width, Windows VT enablement. |
-| `width.go` | Display width (wide CJK/emoji = 2, combining = 0), `truncate`, `padRight`. |
+| `util.go` | `--limit-rate` token bucket, `parseSize`/`formatBytes`/speed/ETA/duration formatting, `bar`, `plural`. |
+| `width.go` | Display width (wide CJK/emoji = 2, combining = 0), `truncate`, `padRight`, `fitNames` (name + text listings). |
 | `resize_*.go` | `watchResize`: SIGWINCH on Unix, width polling (250 ms) on Windows. |
 
 ## Key invariants — don't break these
@@ -68,8 +71,9 @@ Tests are hermetic (`e2e_test.go` runs a fake API + storage + proxy with
   (persisted). Tested with a randomised completion order.
 - **All links run as one.** Every link is planned (resolved, selected, checked) in
   command-line order before any file data moves; then all selected files share one
-  queue, `-j` workers, one dashboard and one summary, followed by `linkReport` (one
-  line per group of same-named links) when there are several. A link that fails to
+  queue, `-j` workers and one dashboard. At the end, a single link prints its name
+  over the totals; several print `linkReport` (one line per group of same-named
+  links) and then the totals for all of them, with no list of names on top. A link that fails to
   plan is reported and dropped; the rest go ahead. A link whose handle an earlier,
   successfully resolved link already had is skipped as a repeat (it would share
   the control file). Same-named files in different links are **not** de-duplicated:
@@ -143,3 +147,8 @@ Tests are hermetic (`e2e_test.go` runs a fake API + storage + proxy with
   names are cut, and is hidden when a minimum bar plus a minimum name won't fit. Redraws happen on every tick and on resize; after a shrink the
   previous frame's rows are recounted as the terminal re-wrapped them
   (`frameRows`) before moving up, and each frame ends with `ESC[J`.
+  One-off listings of a name and a text (the multi-link report, the dry run's
+  file list) are sized by `fitNames`: full names when the line fits, otherwise
+  names shrink to leave the longest text its room but keep at least half the line
+  (and `minNameW`), and the text is cut instead. Piped (`outputCols` = 0), nothing
+  is cut; there is no fixed name cap.
