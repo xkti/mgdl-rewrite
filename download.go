@@ -638,46 +638,60 @@ func (j *job) attemptChunk(ctx context.Context, ci int, label string) error {
 		}
 	}()
 
-	pos := off        // next byte to write
+	// Reads arrive a TLS record (≤ 16 KiB) at a time; they are gathered in buf and
+	// decrypted, MACed and written a buffer at a time, so there's one write call per
+	// readChunk rather than per read. Progress, the stall watchdog and --limit-rate
+	// still follow every read.
+	pos := off        // next byte to write; buf[:got-pos] is read but not yet written
+	got := off        // next byte to read
 	checkpoint := off // last position recorded in the control file
 	defer func() {
 		// Bytes past the checkpoint will be fetched again; take them back off the bar.
-		if lost := pos - checkpoint; lost > 0 {
+		if lost := got - checkpoint; lost > 0 {
 			j.row.rewind(lost)
 		}
 	}()
 
 	buf := make([]byte, readChunk)
-	for pos < c.End {
-		room := min(int64(len(buf)), c.End-pos)
-		nr, rerr := resp.Body.Read(buf[:room])
+	// flush decrypts, MACs and writes what has been gathered, and checkpoints at
+	// every MAC chunk boundary crossed. Without verification the same boundaries
+	// are used, so the two modes resume identically.
+	flush := func() error {
+		if got == pos {
+			return nil
+		}
+		p := buf[:got-pos]
+		stream.XORKeyStream(p, p)
+		if _, werr := j.f.WriteAt(p, pos); werr != nil {
+			return &localError{fmt.Errorf("writing %s: %w", j.part, werr)}
+		}
+		pos = got
+		var macs [][16]byte
+		newCk := checkpoint
+		if mac != nil {
+			macs = mac.Write(p)
+			if len(macs) > 0 {
+				newCk = mac.lastBoundary
+			}
+		} else if b := macBoundaryFloor(pos, c.End); b > checkpoint {
+			newCk = b
+		}
+		if newCk > checkpoint {
+			j.record(ci, newCk-c.Start, macs)
+			checkpoint = newCk
+		}
+		return nil
+	}
+
+	for got < c.End {
+		fill := got - pos
+		room := min(int64(len(buf))-fill, c.End-got)
+		nr, rerr := resp.Body.Read(buf[fill : fill+room])
 		if nr > 0 {
 			lastRead.Store(time.Now().UnixNano())
-			p := buf[:nr]
-			stream.XORKeyStream(p, p)
-			if _, werr := j.f.WriteAt(p, pos); werr != nil {
-				return &localError{fmt.Errorf("writing %s: %w", j.part, werr)}
-			}
-			pos += int64(nr)
+			got += int64(nr)
 			j.row.advance(int64(nr))
 			e.prog.addBytes(int64(nr))
-
-			// Checkpoint at every MAC chunk boundary crossed. Without verification the
-			// same boundaries are used, so the two modes resume identically.
-			var macs [][16]byte
-			newCk := checkpoint
-			if mac != nil {
-				macs = mac.Write(p)
-				if len(macs) > 0 {
-					newCk = mac.lastBoundary
-				}
-			} else if b := macBoundaryFloor(pos, c.End); b > checkpoint {
-				newCk = b
-			}
-			if newCk > checkpoint {
-				j.record(ci, newCk-c.Start, macs)
-				checkpoint = newCk
-			}
 
 			// Pay for what was actually read: a read often returns far less than buf
 			// (one TLS record, ≤ 16 KiB), so charging len(buf) up front would run
@@ -688,8 +702,18 @@ func (j *job) attemptChunk(ctx context.Context, ci int, label string) error {
 				lastRead.Store(time.Now().UnixNano())
 				limited.Store(false)
 				if err != nil {
+					if ferr := flush(); ferr != nil {
+						return ferr
+					}
 					return err
 				}
+			}
+		}
+		// Whatever ends the attempt, what was read is good: write it first, so its
+		// MAC boundaries are checkpointed and it isn't fetched again.
+		if got-pos == int64(len(buf)) || got == c.End || rerr != nil {
+			if err := flush(); err != nil {
+				return err
 			}
 		}
 		if rerr != nil {

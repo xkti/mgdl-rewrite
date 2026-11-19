@@ -48,6 +48,8 @@ type fakeMega struct {
 	proxied    atomic.Int64
 	onServe    func(total int64) // called as bytes go out (to simulate Ctrl+C)
 	slowPerBuf time.Duration
+	piece      int     // bytes per storage write (0 = 32 KiB)
+	starts     []int64 // start offset of every storage request, in order
 
 	linkErrs   []int // API error codes to answer download-link requests with, in order
 	metaErrs   []int // likewise for metadata requests (g without a link, and f)
@@ -267,6 +269,11 @@ func (m *fakeMega) serveStorage(w http.ResponseWriter, r *http.Request) {
 	if throttle {
 		m.throttles--
 	}
+	m.starts = append(m.starts, start)
+	piece := m.piece
+	if piece == 0 {
+		piece = 32 * 1024
+	}
 	drop := int64(-1)
 	if m.drops > 0 {
 		m.drops--
@@ -285,7 +292,6 @@ func (m *fakeMega) serveStorage(w http.ResponseWriter, r *http.Request) {
 	body := f.enc[start : end+1]
 	w.Header().Set("Content-Length", strconv.Itoa(len(body)))
 	w.WriteHeader(200)
-	const piece = 32 * 1024
 	for sent := 0; sent < len(body); {
 		n := min(piece, len(body)-sent)
 		if drop >= 0 && int64(sent+n) > drop {
@@ -300,6 +306,11 @@ func (m *fakeMega) serveStorage(w http.ResponseWriter, r *http.Request) {
 		}
 		if _, err := w.Write(body[sent : sent+n]); err != nil {
 			return
+		}
+		if m.piece > 0 {
+			if fl, ok := w.(http.Flusher); ok {
+				fl.Flush() // make the client see each piece as its own read
+			}
 		}
 		sent += n
 		total := m.served.Add(int64(n))
@@ -445,6 +456,64 @@ func TestDownloadRetriesDroppedConnections(t *testing.T) {
 		t.Fatal(err)
 	}
 	mustEqualFile(t, filepath.Join(out, "flaky.bin"), f.plain)
+}
+
+// Reads are gathered into a buffer before being decrypted, MACed and written; odd
+// read sizes that straddle blocks, buffers and MAC chunks must change nothing, with
+// or without verification, in either mode.
+func TestOddReadSizes(t *testing.T) {
+	for _, piece := range []int{7, 16*1024 + 3} {
+		for _, seq := range []bool{false, true} {
+			for _, verify := range []bool{true, false} {
+				m := newFakeMega(t)
+				m.piece = piece
+				size := 600*1024 + 11
+				if piece > 1024 {
+					size = 5<<20 + 11
+				}
+				f := m.addFile("FiLe0001", "odd.bin", size, 9, false)
+				out := t.TempDir()
+				cfg := m.config(out)
+				cfg.sequential, cfg.verify, cfg.direct = seq, verify, true
+				st, err := m.run(context.Background(), cfg, m.fileLink(f))
+				if err != nil {
+					t.Fatalf("piece %d seq %v verify %v: %v", piece, seq, verify, err)
+				}
+				if st.completed != 1 {
+					t.Fatalf("piece %d seq %v verify %v: stats %+v", piece, seq, verify, st)
+				}
+				mustEqualFile(t, filepath.Join(out, "odd.bin"), f.plain)
+			}
+		}
+	}
+}
+
+// A connection that drops with data still gathered in the buffer must write it
+// and checkpoint the MAC boundary it crossed, so the retry starts there and not
+// at the last boundary written before it.
+func TestDropFlushesGatheredData(t *testing.T) {
+	for _, verify := range []bool{true, false} {
+		m := newFakeMega(t)
+		m.piece = 16 * 1024
+		// Reads 0–256 KiB fill the buffer (checkpoint 128 KiB); 256–400 KiB are
+		// still gathered when the connection drops, past the 384 KiB boundary.
+		m.dropAfter, m.drops = 400*1024, 1
+		f := m.addFile("FiLe0001", "drop.bin", 2<<20, 10, false)
+		out := t.TempDir()
+		cfg := m.config(out)
+		cfg.sequential, cfg.verify, cfg.direct = true, verify, true
+		if _, err := m.run(context.Background(), cfg, m.fileLink(f)); err != nil {
+			t.Fatal(err)
+		}
+		mustEqualFile(t, filepath.Join(out, "drop.bin"), f.plain)
+		m.mu.Lock()
+		starts := m.starts
+		m.mu.Unlock()
+		// (The second download chunk, at 1280 KiB, is fetched after these.)
+		if len(starts) < 2 || starts[0] != 0 || starts[1] != 384*1024 {
+			t.Fatalf("verify %v: requests started at %v, want 0 then %d", verify, starts, 384*1024)
+		}
+	}
 }
 
 // A connection dropped before the response makes net/http name the URL in its
