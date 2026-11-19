@@ -101,7 +101,7 @@ func TestRenameNotes(t *testing.T) {
 		t.Errorf("unexpected notes:\n%s", all)
 	}
 	// Only the selected files are reported.
-	sel, _ := tr.matchPaths([]string{"sub/plain.txt"})
+	sel, _ := tr.matchPaths(tr.files, []string{"sub/plain.txt"})
 	if notes := renameNotes(tr, sel); len(notes) != 0 {
 		t.Errorf("notes for an unrenamed selection: %v", notes)
 	}

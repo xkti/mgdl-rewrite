@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -47,7 +48,7 @@ func TestPickerView(t *testing.T) {
 	s := newSelector(4)
 	for _, tr := range []*tree{t1, t2, t3} {
 		m.add(tr)
-		s.addTree(tr, tr.files)
+		s.addTree(tr, tr.files, nil)
 	}
 	if !s.loading() || !strings.HasPrefix(s.title(), "Loading links: 3 of 4") {
 		t.Fatalf("title %q", s.title())
@@ -96,7 +97,7 @@ func TestPickerView(t *testing.T) {
 // Enter while links are loading asks first; any other key keeps waiting.
 func TestPickerEnterWhileLoading(t *testing.T) {
 	s := newSelector(2)
-	s.addTree(pickerTree("Pack", "a.txt"), nil)
+	s.addTree(pickerTree("Pack", "a.txt"), nil, nil)
 	if _, done := s.handleKey("\r"); done || !s.confirm {
 		t.Fatal("first enter should ask")
 	}
@@ -154,6 +155,51 @@ func TestPickAcrossLinks(t *testing.T) {
 	if _, runs, err = m.runAll(context.Background(), cfg, l1, m.fileLink(c)); !errors.Is(err, errSelectCancelled) || runs[0].status != statusSkipped {
 		t.Fatalf("cancel: %v, %v", err, runs[0].status)
 	}
+}
+
+// Links into the same share show as one tree, with what each points at
+// preselected and the folders down to it open.
+func TestPickLinksIntoSameShare(t *testing.T) {
+	m := newFakeMega(t)
+	a := m.addFile("FiLeAaAa", "a.bin", 100, 1, false)
+	x := m.addFile("FiLeXxXx", "x.bin", 100, 2, false)
+	b := m.addFile("FiLeBbBb", "b.bin", 100, 3, false)
+	link := m.publishFolder("One", []*fakeFile{a, x}, []*fakeFile{b})
+
+	old := runPickerFn
+	t.Cleanup(func() { runPickerFn = old })
+	var chosen []string
+	var trees int
+	var subOpen bool
+	runPickerFn = func(ctx context.Context, s *selector, arrivals <-chan *linkRun, arrive func(*linkRun)) (pickerEvent, error) {
+		for lr := range arrivals {
+			arrive(lr)
+		}
+		trees = len(s.trees)
+		subOpen = s.open["one/sub"]
+		for _, f := range s.files {
+			if s.chosen[f] {
+				chosen = append(chosen, f.relPath)
+			}
+		}
+		return pickerDone, nil
+	}
+	out := t.TempDir()
+	cfg := m.config(out)
+	cfg.selectTUI = true
+	st, _, err := m.runAll(context.Background(), cfg, link+"/folder/SuBdIr01", link+"/file/FiLeAaAa")
+	if err != nil {
+		t.Fatal(err)
+	}
+	slices.Sort(chosen)
+	if trees != 1 || !subOpen || strings.Join(chosen, ",") != "a.bin,sub/b.bin" {
+		t.Fatalf("trees %d, sub open %v, preselected %q", trees, subOpen, chosen)
+	}
+	if st.completed != 2 {
+		t.Fatalf("stats %+v", st)
+	}
+	mustEqualFile(t, filepath.Join(out, "One", "sub", "b.bin"), b.plain)
+	mustEqualFile(t, filepath.Join(out, "One", "a.bin"), a.plain)
 }
 
 // While links load, a rate-limit wait shows in the header as a countdown, and the

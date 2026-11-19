@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -55,16 +56,18 @@ func newSelector(total int) *selector {
 	return s
 }
 
-// addTree adds a loaded link with its preselected files (from --path, or all).
-// Its top folder starts open, and so does everything in it if it's small enough
-// to take in at once.
-func (s *selector) addTree(t *tree, preselected []*node) {
+// addTree adds a loaded link with its preselected files (from --path, or all, or
+// what a link into the folder points at). Its top folder starts open, and so does
+// everything in it if it's small enough to take in at once; the folders down to
+// what the link points at (focus, nil for the whole link) always do.
+func (s *selector) addTree(t *tree, preselected []*node, focus *node) {
 	s.loaded++
 	s.trees = append(s.trees, t)
 	s.files = append(s.files, t.files...)
 	for _, f := range preselected {
 		s.chosen[f] = true
 	}
+	s.openTo(focus)
 	if t.root.isDir {
 		s.open[strings.ToLower(t.root.name)] = true
 		if len(t.files) <= 40 {
@@ -82,6 +85,35 @@ func (s *selector) addTree(t *tree, preselected []*node) {
 		}
 	}
 	s.refresh()
+}
+
+// addJoined counts a link into a share already in the view: its files are
+// preselected there and the folders down to what it points at opened.
+func (s *selector) addJoined(preselected []*node, focus *node) {
+	s.loaded++
+	for _, f := range preselected {
+		s.chosen[f] = true
+	}
+	s.openTo(focus)
+	s.refresh()
+}
+
+// openTo opens the folders from the top of n's tree down to n (n itself too, if a folder).
+func (s *selector) openTo(n *node) {
+	if n == nil {
+		return
+	}
+	var chain []*node
+	for p := n; p != nil; p = p.parent {
+		if p.isDir {
+			chain = append(chain, p)
+		}
+	}
+	path := ""
+	for _, d := range slices.Backward(chain) {
+		path = joinRel(path, strings.ToLower(d.name))
+		s.open[path] = true
+	}
 }
 
 // addBroken records a link that couldn't be opened; it shows as a message row.

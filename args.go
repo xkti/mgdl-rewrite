@@ -274,14 +274,14 @@ Usage:
 Links:
   https://mega.nz/file/ID#KEY                    a file
   https://mega.nz/folder/ID#KEY                  a whole folder
-  https://mega.nz/folder/ID#KEY/folder/HANDLE    a subfolder of it
-  https://mega.nz/folder/ID#KEY/file/HANDLE      a single file in it
+  https://mega.nz/folder/ID#KEY/folder/HANDLE    a subfolder of it, kept in its place
+  https://mega.nz/folder/ID#KEY/file/HANDLE      a single file in it, likewise
   https://mega.nz/#!ID!KEY, https://mega.nz/#F!ID!KEY   legacy forms
 
 Selection:
   -l, --list              print the file tree with sizes and exit
   -p, --path PATH         download only this file or folder (relative to the link's
-                          folder, e.g. "Season 1/ep01.mkv"); repeatable; with
+                          top folder, e.g. "Season 1/ep01.mkv"); repeatable; with
                           several links, applies to each of them
   -s, --select            choose files from all links in one interactive tree
                           (-p entries preselected)

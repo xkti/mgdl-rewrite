@@ -621,12 +621,69 @@ func TestFolderDownloadPathsAndSkip(t *testing.T) {
 		t.Fatal("control file left after completion")
 	}
 
-	// Subfolder link: the subfolder becomes the root.
+	// Subfolder link: the share's tree is kept, only the subfolder is downloaded.
 	out2 := t.TempDir()
 	if _, err := m.run(context.Background(), m.config(out2), link+"/folder/SuBdIr01"); err != nil {
 		t.Fatal(err)
 	}
-	mustEqualFile(t, filepath.Join(out2, "sub", "b.bin"), b.plain)
+	mustEqualFile(t, filepath.Join(out2, "My Share", "sub", "b.bin"), b.plain)
+	mustEqualFile(t, filepath.Join(out2, "My Share", "sub", "c.bin"), c.plain)
+	if fileExists(filepath.Join(out2, "My Share", "a.txt")) {
+		t.Fatal("a subfolder link downloaded a file outside its subfolder")
+	}
+
+	// -p is relative to the share's top folder and narrows within the subfolder.
+	out3 := t.TempDir()
+	cfg3 := m.config(out3)
+	cfg3.paths = []string{"sub/c.bin"}
+	if _, err := m.run(context.Background(), cfg3, link+"/folder/SuBdIr01"); err != nil {
+		t.Fatal(err)
+	}
+	mustEqualFile(t, filepath.Join(out3, "My Share", "sub", "c.bin"), c.plain)
+	if fileExists(filepath.Join(out3, "My Share", "sub", "b.bin")) {
+		t.Fatal("--path didn't narrow the subfolder link")
+	}
+	cfg3.paths = []string{"a.txt"} // outside the subfolder: matches nothing
+	if _, err := m.run(context.Background(), cfg3, link+"/folder/SuBdIr01"); err == nil || !strings.Contains(err.Error(), "matches nothing") {
+		t.Fatalf("--path outside the subfolder: %v", err)
+	}
+}
+
+// Links to different parts of the same share download into one copy of its tree,
+// as one run with one control file; the same link twice is still a repeat.
+func TestLinksIntoSameShare(t *testing.T) {
+	m := newFakeMega(t)
+	a := m.addFile("FiLeAaAa", "a.txt", 100, 8, false)
+	x := m.addFile("FiLeXxXx", "x.txt", 70, 12, false)
+	b := m.addFile("FiLeBbBb", "b.bin", 2<<20+5, 9, false)
+	link := m.publishFolder("My Share", []*fakeFile{a, x}, []*fakeFile{b})
+	out := t.TempDir()
+
+	st, runs, err := m.runAll(context.Background(), m.config(out),
+		link+"/folder/SuBdIr01", link+"/file/FiLeAaAa", link+"/folder/SuBdIr01")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.completed != 2 {
+		t.Fatalf("stats %+v", st)
+	}
+	mustEqualFile(t, filepath.Join(out, "My Share", "sub", "b.bin"), b.plain)
+	mustEqualFile(t, filepath.Join(out, "My Share", "a.txt"), a.plain)
+	if fileExists(filepath.Join(out, "My Share", "x.txt")) {
+		t.Fatal("a file no link pointed at was downloaded")
+	}
+	if fileExists(filepath.Join(out, "My Share_FoLdEr01")) || fileExists(filepath.Join(out, "My Share", "a_FiLeAaAa.txt")) {
+		t.Fatal("the share was downloaded twice")
+	}
+	if runs[0].status != statusDone || runs[1].status != statusDone || runs[1].joined != runs[0] {
+		t.Fatalf("statuses %v %v, joined %v", runs[0].status, runs[1].status, runs[1].joined)
+	}
+	if runs[2].status != statusSkipped || runs[2].note != "same as link 1" {
+		t.Fatalf("repeat: %v %q", runs[2].status, runs[2].note)
+	}
+	if got := linkReport(runs, 0); len(got) != 2 || !strings.Contains(got[1], "My Share (3 links)") {
+		t.Fatalf("report %q", got)
+	}
 }
 
 func TestVerifyExistingCatchesCorruption(t *testing.T) {

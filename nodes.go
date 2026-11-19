@@ -133,25 +133,58 @@ func resolve(ctx context.Context, api *apiClient, l *megaLink) (*tree, error) {
 		}
 	}
 
-	rootHandle := shareRoot
-	if l.target != "" {
-		rootHandle = l.target
+	// A link to a subfolder or a file inside the share keeps the share's whole
+	// tree, so what it points at lands where it belongs in the folder; it only
+	// narrows what is selected (scope).
+	if l.target != "" && nodes[l.target] == nil {
+		return nil, fmt.Errorf("node %s is not in this folder", l.target)
 	}
-	root := nodes[rootHandle]
-	if root == nil {
-		return nil, fmt.Errorf("node %s is not in this folder", rootHandle)
-	}
-	root.parent = nil // a subfolder link starts its own tree
-
+	root := nodes[shareRoot]
 	t := &tree{link: l, folder: l.id, root: root}
 	root.name, root.renamed = sanitize(root.origName)
-	if !root.isDir {
-		root.relPath, root.origPath = root.name, root.origName
-		t.files = []*node{root}
-		return t, nil
-	}
 	finishTree(root, &t.files)
 	return t, nil
+}
+
+// under is the files at or below n, in tree order (all of them for nil or the root).
+func (t *tree) under(n *node) []*node {
+	if n == nil || n == t.root {
+		return t.files
+	}
+	var out []*node
+	for _, f := range t.files {
+		if f.within(n) {
+			out = append(out, f)
+		}
+	}
+	return out
+}
+
+// byHandle finds a node of the tree (nil if it isn't in it).
+func (t *tree) byHandle(h string) *node {
+	var find func(n *node) *node
+	find = func(n *node) *node {
+		if n.handle == h {
+			return n
+		}
+		for _, c := range n.children {
+			if m := find(c); m != nil {
+				return m
+			}
+		}
+		return nil
+	}
+	return find(t.root)
+}
+
+// within reports whether n is anc or somewhere below it.
+func (n *node) within(anc *node) bool {
+	for p := n; p != nil; p = p.parent {
+		if p == anc {
+			return true
+		}
+	}
+	return false
 }
 
 // wrongKey reports that the link's own key could not decrypt what it points at.
@@ -465,14 +498,15 @@ func (t *tree) baseDir(output string) string {
 	return output
 }
 
-// matchPaths narrows the files to those under any of the given paths (all files
-// if there are none), and says for each path whether it matched anything here.
-// Paths are relative to the link's root folder, use '/' separators, and match
-// either a file or a whole folder. Both the original MEGA names and the sanitised
-// local names match. A file link has no folder, so paths never match in it.
-func (t *tree) matchPaths(paths []string) ([]*node, []bool) {
+// matchPaths narrows files (some or all of the tree's) to those under any of the
+// given paths (all of them if there are none), and says for each path whether it
+// matched anything among them. Paths are relative to the top folder of the share
+// (also for a link to a subfolder in it), use '/' separators, and match either a
+// file or a whole folder. Both the original MEGA names and the sanitised local
+// names match. A file link has no folder, so paths never match in it.
+func (t *tree) matchPaths(files []*node, paths []string) ([]*node, []bool) {
 	if len(paths) == 0 {
-		return t.files, nil
+		return files, nil
 	}
 	hit := make([]bool, len(paths))
 	if !t.root.isDir {
@@ -481,7 +515,7 @@ func (t *tree) matchPaths(paths []string) ([]*node, []bool) {
 	picked := map[*node]bool{}
 	for i, p := range paths {
 		want := strings.Trim(strings.ReplaceAll(p, "\\", "/"), "/")
-		for _, f := range t.files {
+		for _, f := range files {
 			for _, have := range []string{f.origPath, f.relPath} {
 				if want == "" || have == want || strings.HasPrefix(have, want+"/") {
 					picked[f] = true
@@ -491,7 +525,7 @@ func (t *tree) matchPaths(paths []string) ([]*node, []bool) {
 		}
 	}
 	var out []*node
-	for _, f := range t.files { // keep tree order
+	for _, f := range files { // keep tree order
 		if picked[f] {
 			out = append(out, f)
 		}

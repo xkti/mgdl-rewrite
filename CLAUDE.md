@@ -74,17 +74,25 @@ Tests are hermetic (`e2e_test.go` runs a fake API + storage + proxy with
   queue, `-j` workers and one dashboard. At the end, a single link prints its name
   over the totals; several print `linkReport` (one line per group of same-named
   links) and then the totals for all of them, with no list of names on top. A link that fails to
-  plan is reported and dropped; the rest go ahead. A link whose handle an earlier,
-  successfully resolved link already had is skipped as a repeat (it would share
-  the control file). Same-named files in different links are **not** de-duplicated:
+  plan is reported and dropped; the rest go ahead. A link whose share (or file)
+  an earlier, successfully resolved link already had shares its tree and control
+  file: the very same link is skipped as a repeat; a link to another part of the
+  share **joins** the earlier link's run (`linkRun.joined`): its files are added to
+  that run's selection (preselected in the picker), and it ends with that run's
+  status (`settleJoined`). Same-named files in different links are **not** de-duplicated:
   both are downloaded, as below. Links are resolved four at a time
   (`resolveInOrder`) but accepted (repeat check, `nameMerger.add`, selection)
   strictly in order on one goroutine — with `--select`, the picker's — so names
   never depend on load order and nothing on screen changes under the user.
-  `-p` applies to every link (`matchPaths`, in each link's own folder); a link with
+  `-p` applies to every link (`matchPaths`, relative to each link's top folder, within
+  what the link points at); a link with
   no match is skipped, and an entry matching in no link stops the run before any
   download (with `--select` it only preselects, so that's just a warning).
-- **One control file per link**, all mutation through `controlFile.update` (one
+- **Subfolder and file-in-folder links keep the share's whole tree.** `resolve`
+  always roots the tree at the share; the link's target only narrows the selection
+  (`selectIn` → `tree.under`), so its files land where a link to the whole share
+  would put them, and the control file is the share's (`megaLink.handle` = share ID).
+- **One control file per link** (per share), all mutation through `controlFile.update` (one
   mutex), saved atomically (tmp + rename) every 2s and on exit, removed when empty.
 - **Final name means verified.** Data goes to `NAME.part`; rename only after the
   MAC matches (or verification is off). Mismatch → delete + redownload, bounded by

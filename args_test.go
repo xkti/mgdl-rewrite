@@ -107,11 +107,11 @@ func TestParseLink(t *testing.T) {
 	}{
 		{"https://mega.nz/file/AbCdEfGh#" + key43, kindFile, "AbCdEfGh", "", "AbCdEfGh"},
 		{"https://mega.nz/folder/AbCdEfGh#" + key22, kindFolder, "AbCdEfGh", "", "AbCdEfGh"},
-		{"https://mega.nz/folder/AbCdEfGh#" + key22 + "/folder/Zz9_-xYw", kindFolder, "AbCdEfGh", "Zz9_-xYw", "Zz9_-xYw"},
-		{"https://mega.nz/folder/AbCdEfGh#" + key22 + "/file/Zz9_-xYw", kindFolder, "AbCdEfGh", "Zz9_-xYw", "Zz9_-xYw"},
+		{"https://mega.nz/folder/AbCdEfGh#" + key22 + "/folder/Zz9_-xYw", kindFolder, "AbCdEfGh", "Zz9_-xYw", "AbCdEfGh"},
+		{"https://mega.nz/folder/AbCdEfGh#" + key22 + "/file/Zz9_-xYw", kindFolder, "AbCdEfGh", "Zz9_-xYw", "AbCdEfGh"},
 		{"https://mega.nz/#!AbCdEfGh!" + key43, kindFile, "AbCdEfGh", "", "AbCdEfGh"},
 		{"https://mega.co.nz/#F!AbCdEfGh!" + key22, kindFolder, "AbCdEfGh", "", "AbCdEfGh"},
-		{"https://mega.nz/#F!AbCdEfGh!" + key22 + "!Zz9_-xYw", kindFolder, "AbCdEfGh", "Zz9_-xYw", "Zz9_-xYw"},
+		{"https://mega.nz/#F!AbCdEfGh!" + key22 + "!Zz9_-xYw", kindFolder, "AbCdEfGh", "Zz9_-xYw", "AbCdEfGh"},
 		{"  https://www.mega.nz/file/AbCdEfGh#" + key43 + "\r\n", kindFile, "AbCdEfGh", "", "AbCdEfGh"},
 	}
 	for _, c := range cases {

@@ -47,7 +47,8 @@ type linkRun struct {
 	files []*node     // selected
 	space *spaceGuard // nil with --no-space-check, or when free space is unknown
 
-	matched bool // the link was opened and -p applied to it
+	matched bool     // the link was opened and -p applied to it
+	joined  *linkRun // an earlier link into the same share, whose run took this one's files
 
 	throttleNoted atomic.Bool // the "rate limited" notice was shown for its lookup
 
@@ -112,6 +113,7 @@ func runLinks(ctx context.Context, cfg *config, api *apiClient, hc *http.Client)
 	if len(queued) > 0 && !cfg.list && !cfg.dryRun {
 		st = downloadAll(ctx, cfg, api, hc, queued)
 	}
+	defer settleJoined(runs)
 	if ctx.Err() != nil {
 		for _, lr := range runs {
 			if lr.status == statusQueued {
@@ -127,6 +129,16 @@ func runLinks(ctx context.Context, cfg *config, api *apiClient, hc *http.Client)
 		}
 	}
 	return st, runs, errors.Join(errs...)
+}
+
+// settleJoined gives each link that joined an earlier link's run that run's
+// outcome: its files were downloaded (or not) along with that link's.
+func settleJoined(runs []*linkRun) {
+	for _, lr := range runs {
+		if j := lr.joined; j != nil {
+			lr.status, lr.note, lr.files = j.status, j.note, nil
+		}
+	}
 }
 
 // planLinks is phase 1. Links that can't go ahead are marked and reported; the
@@ -182,29 +194,38 @@ func planLinks(ctx context.Context, cfg *config, api *apiClient) (runs []*linkRu
 			say(func() { linkError(lr, total, lr.err) })
 			return
 		}
-		// A link whose share or file an earlier link already resolved is the same
-		// thing given twice and would share its control file: drop it. (Only links
-		// that worked count, so a repeat with a working key still runs.)
-		if first := seen[lr.link.handle()]; first != nil {
-			lr.tree = first.tree // reported alongside the first
-			lr.status, lr.note = statusSkipped, fmt.Sprintf("same as link %d", first.idx)
-			say(func() { noticef("link %d is the same as link %d, skipping it", lr.idx, first.idx) })
-			return
-		}
-		seen[lr.link.handle()] = lr
-		lr.tree.showRoot = total > 1
-		merger.add(lr.tree)
 		if len(cfg.paths) > 0 && !lr.tree.root.isDir && total == 1 {
 			err := errors.New("--path only applies to folder links")
 			lr.stop(statusFailed, err)
 			say(func() { linkError(lr, total, err) })
 			return
 		}
-		files, hit := lr.tree.matchPaths(cfg.paths)
-		for i, h := range hit {
-			pathHit[i] = pathHit[i] || h
+		// A link into a share (or file) an earlier link already resolved shares its
+		// tree and control file. The same link again is dropped; another part of
+		// the same share joins the earlier link's run, adding its files to the
+		// selection. (Only links that worked count, so a repeat with a working key
+		// still runs.)
+		if first := seen[lr.link.handle()]; first != nil {
+			if first.link.target == lr.link.target {
+				lr.tree = first.tree // reported alongside the first
+				lr.status, lr.note = statusSkipped, fmt.Sprintf("same as link %d", first.idx)
+				say(func() { noticef("link %d is the same as link %d, skipping it", lr.idx, first.idx) })
+				return
+			}
+			lr.tree = first.tree
+			lr.joined = first
+			lr.status, lr.note = statusSkipped, fmt.Sprintf("downloaded with link %d", first.idx)
+			lr.files = selectIn(first.tree, lr.link.target, cfg.paths, pathHit)
+			lr.matched = true
+			if first.status == statusQueued {
+				first.files = unionFiles(first.tree, first.files, lr.files)
+			}
+			return
 		}
-		lr.files = files
+		seen[lr.link.handle()] = lr
+		lr.tree.showRoot = total > 1
+		merger.add(lr.tree)
+		lr.files = selectIn(lr.tree, lr.link.target, cfg.paths, pathHit)
 		lr.matched = true
 	}
 
@@ -297,6 +318,39 @@ func planLinks(ctx context.Context, cfg *config, api *apiClient) (runs []*linkRu
 	return runs, false
 }
 
+// selectIn is what a link selects in its share's tree: the files it points at
+// (all, or those under its subfolder or its one file), narrowed by -p. hit
+// records which -p entries matched.
+func selectIn(t *tree, target string, paths []string, hit []bool) []*node {
+	var n *node
+	if target != "" {
+		n = t.byHandle(target)
+	}
+	files, h := t.matchPaths(t.under(n), paths)
+	for i := range h {
+		hit[i] = hit[i] || h[i]
+	}
+	return files
+}
+
+// unionFiles merges two selections from the same tree, in tree order.
+func unionFiles(t *tree, a, b []*node) []*node {
+	in := map[*node]bool{}
+	for _, f := range a {
+		in[f] = true
+	}
+	for _, f := range b {
+		in[f] = true
+	}
+	var out []*node
+	for _, f := range t.files {
+		if in[f] {
+			out = append(out, f)
+		}
+	}
+	return out
+}
+
 // lookupWait is the latest rate-limit wait while links are looked up, for the
 // picker's header. Lookups run in the background, so it's atomic.
 type lookupWait struct {
@@ -339,7 +393,7 @@ func unmatchedPaths(paths []string, hit []bool, runs []*linkRun) error {
 	if len(trees) == 1 {
 		where = fmt.Sprintf("%q", trees[0].title())
 	}
-	return fmt.Errorf("--path %s matches nothing in %s (paths are relative to each link's folder, see --list)",
+	return fmt.Errorf("--path %s matches nothing in %s (paths are relative to each link's top folder, see --list)",
 		strings.Join(missing, ", "), where)
 }
 
@@ -358,10 +412,12 @@ func pick(ctx context.Context, runs []*linkRun, arrivals <-chan *linkRun, accept
 		arrived[lr] = true
 		accept(lr)
 		switch {
+		case lr.joined != nil:
+			s.addJoined(lr.files, lr.tree.byHandle(lr.link.target))
 		case lr.status == statusFailed:
 			s.addBroken(lr)
 		case lr.status == statusQueued:
-			s.addTree(lr.tree, lr.files)
+			s.addTree(lr.tree, lr.files, lr.tree.byHandle(lr.link.target))
 		default:
 			s.addSkipped()
 		}

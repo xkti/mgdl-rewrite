@@ -19,8 +19,8 @@ Needs Go 1.26+. Dependencies: `golang.org/x/term` and `golang.org/x/sys` only.
 ```sh
 mgdl https://mega.nz/file/ID#KEY                     # a file
 mgdl https://mega.nz/folder/ID#KEY                   # a folder, into ./FolderName/
-mgdl https://mega.nz/folder/ID#KEY/folder/HANDLE     # just a subfolder
-mgdl https://mega.nz/folder/ID#KEY/file/HANDLE       # one file from a folder
+mgdl https://mega.nz/folder/ID#KEY/folder/HANDLE     # just a subfolder, in its place in ./FolderName/
+mgdl https://mega.nz/folder/ID#KEY/file/HANDLE       # one file from a folder, likewise
 mgdl -l https://mega.nz/folder/ID#KEY                # list the tree and exit
 mgdl -p 'Season 1' -p extras/notes.txt LINK          # only these paths
 mgdl -s LINK                                         # pick files interactively
@@ -30,6 +30,12 @@ mgdl -i links.txt                                    # many links, one per line
 ```
 
 Legacy links (`https://mega.nz/#!ID!KEY`, `https://mega.nz/#F!ID!KEY`) work too.
+
+A link to a subfolder or a file inside a folder keeps the whole folder's layout:
+only what it points at is downloaded, but into the same place a link to the whole
+folder would put it. Several such links into the same folder are downloaded
+together into one copy of it, and with `-s` the picker shows that folder with each
+link's part already ticked.
 
 Interrupted? Run the same command again and it picks up where it stopped.
 
@@ -43,7 +49,7 @@ Interrupted? Run the same command again and it picks up where it stopped.
 | `-r, --retries N` | `5` | Attempts per chunk; `0` = forever. Resets after real progress. |
 | `-x, --proxy LIST` | 4 built-in Workers | Comma-separated proxy domains, picked at random per request. |
 | `--direct` | off | Skip the proxy. |
-| `-p, --path PATH` | | File or folder to download, relative to the link's folder. Repeatable. With several links it applies to each; links with no match are skipped, and a path that matches in none of them stops the run. |
+| `-p, --path PATH` | | File or folder to download, relative to the link's top folder (for a subfolder link too, which it narrows further). Repeatable. With several links it applies to each; links with no match are skipped, and a path that matches in none of them stops the run. |
 | `-l, --list` | | Print the file tree with sizes, then exit. |
 | `-s, --select` | | Interactive file picker (`-p` entries come preselected). |
 | `-n, --dry-run` | | Report what would be downloaded/resumed/skipped. Writes nothing. |

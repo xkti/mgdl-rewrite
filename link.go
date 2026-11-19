@@ -25,14 +25,10 @@ type megaLink struct {
 	target string // for folder links: handle of a subfolder or file inside it ("" = root)
 }
 
-// handle is the name used for this link's control file: the node the link points
-// at, which is the share itself unless a subfolder or file was singled out.
-func (l *megaLink) handle() string {
-	if l.target != "" {
-		return l.target
-	}
-	return l.id
-}
+// handle is the name used for this link's control file: the file or the folder
+// share. A link to a subfolder or file inside a share downloads into the share's
+// own tree, so it shares the share's control file.
+func (l *megaLink) handle() string { return l.id }
 
 var (
 	// Path of a modern link: /file/ID or /folder/ID. The ID is validated separately
