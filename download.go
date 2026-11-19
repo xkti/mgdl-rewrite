@@ -586,7 +586,7 @@ func (j *job) attemptChunk(ctx context.Context, ci int, label string) error {
 	}
 	resp, err := e.http.Do(req)
 	if err != nil {
-		return fmt.Errorf("%s: %w", hostOr(proxy, "storage"), err)
+		return fmt.Errorf("%s: %w", hostOr(proxy, "storage"), hideURL(err))
 	}
 	defer resp.Body.Close()
 
@@ -701,7 +701,7 @@ func (j *job) attemptChunk(ctx context.Context, ci int, label string) error {
 			if ctx.Err() != nil {
 				return ctx.Err()
 			}
-			return fmt.Errorf("%s: %w", hostOr(proxy, "storage"), rerr)
+			return fmt.Errorf("%s: %w", hostOr(proxy, "storage"), hideURL(rerr))
 		}
 	}
 	if pos < c.End {

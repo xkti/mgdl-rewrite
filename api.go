@@ -166,12 +166,12 @@ func (c *apiClient) post(ctx context.Context, folder string, body []byte) ([]byt
 	start := time.Now()
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("api request: %w", err)
+		return nil, fmt.Errorf("api request: %w", hideURL(err))
 	}
 	defer resp.Body.Close()
 	raw, err := io.ReadAll(io.LimitReader(resp.Body, 256<<20))
 	if err != nil {
-		return nil, fmt.Errorf("api response: %w", err)
+		return nil, fmt.Errorf("api response: %w", hideURL(err))
 	}
 	debugf("api: HTTP %d, %d bytes in %s: %s", resp.StatusCode, len(raw),
 		time.Since(start).Round(time.Millisecond), truncateBytes(raw, 200))

@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -175,6 +176,18 @@ func printSpace(r spaceReport, short string) {
 func fileExists(p string) bool {
 	_, err := os.Stat(p)
 	return err == nil
+}
+
+// hideURL drops the request URL that net/http puts in its errors (`Get "URL":
+// unexpected EOF`). A download URL carries a signed token and is long, so it is
+// only shown with -v (logged here); warnings get the bare network error.
+func hideURL(err error) error {
+	var ue *url.Error
+	if errors.As(err, &ue) {
+		debugf("http: %v", ue)
+		return ue.Err
+	}
+	return err
 }
 
 // newAPIHTTPClient is for MEGA API calls: direct, compressed, quick to time out.

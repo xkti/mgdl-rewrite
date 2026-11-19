@@ -41,6 +41,7 @@ type fakeMega struct {
 	dropAfter  int64 // drop a storage response after this many bytes…
 	drops      int   // …for this many responses
 	throttles  int   // answer this many storage requests with 509
+	hangups    int   // close this many storage connections before any response
 	served     atomic.Int64
 	requests   atomic.Int64
 	linkCalls  atomic.Int64
@@ -258,6 +259,10 @@ func (m *fakeMega) serveStorage(w http.ResponseWriter, r *http.Request) {
 	}
 
 	m.mu.Lock()
+	hangup := m.hangups > 0
+	if hangup {
+		m.hangups--
+	}
 	throttle := m.throttles > 0
 	if throttle {
 		m.throttles--
@@ -268,6 +273,9 @@ func (m *fakeMega) serveStorage(w http.ResponseWriter, r *http.Request) {
 		drop = m.dropAfter
 	}
 	m.mu.Unlock()
+	if hangup {
+		panic(http.ErrAbortHandler) // no status line: the client's Do fails
+	}
 	if throttle {
 		w.Header().Set("Retry-After", "1")
 		w.WriteHeader(509)
@@ -437,6 +445,28 @@ func TestDownloadRetriesDroppedConnections(t *testing.T) {
 		t.Fatal(err)
 	}
 	mustEqualFile(t, filepath.Join(out, "flaky.bin"), f.plain)
+}
+
+// A connection dropped before the response makes net/http name the URL in its
+// error; the retry warning must not show it (only -v does).
+func TestRetryWarningHidesURL(t *testing.T) {
+	m := newFakeMega(t)
+	f := m.addFile("FiLe0001", "hangup.bin", 256<<10, 5, false)
+	m.hangups = 1
+	out := t.TempDir()
+	cfg := m.config(out)
+	stderr := captureStderr(t, func() {
+		if _, err := m.run(context.Background(), cfg, m.fileLink(f)); err != nil {
+			t.Error(err)
+		}
+	})
+	mustEqualFile(t, filepath.Join(out, "hangup.bin"), f.plain)
+	if !strings.Contains(stderr, "retry") {
+		t.Fatalf("expected a retry warning, got:\n%s", stderr)
+	}
+	if strings.Contains(stderr, "/dl/") || strings.Contains(stderr, "http://") {
+		t.Fatalf("warning shows the URL:\n%s", stderr)
+	}
 }
 
 func TestDownloadGivesUpAfterRetries(t *testing.T) {
