@@ -86,12 +86,8 @@ func cli(argv []string) int {
 	// One link: its name over the totals. Several: a line per link, then the
 	// totals for all of them.
 	if len(runs) > 1 && !cfg.list && !cfg.dryRun {
-		cols := 0 // piped: nothing is cut
-		if con.tty {
-			cols = terminalWidth()
-		}
 		fmt.Println()
-		for _, line := range linkReport(runs, cols) {
+		for _, line := range linkReport(runs, outputCols()) {
 			fmt.Println(line)
 		}
 		if st.ran {
@@ -139,12 +135,11 @@ func dryRun(cfg *config, t *tree, ctl *controlFile, files []*node, space *spaceR
 	}
 	fmt.Printf("  mode:    %s, %s chunks, verify %v\n\n", mode, formatBytes(cfg.chunkSize), cfg.verify)
 
+	// Work out every line first, so the columns can be fitted to the terminal.
 	var remain int64
-	nameW := 0
-	for _, n := range files {
-		nameW = max(nameW, min(len([]rune(n.relPath)), 50))
-	}
-	for _, n := range files {
+	whats := make([]string, len(files))
+	nameW, whatW := 0, 0
+	for i, n := range files {
 		final, blocker, err := finalPath(cfg, t, n)
 		var what string
 		if err != nil {
@@ -169,7 +164,17 @@ func dryRun(cfg *config, t *tree, ctl *controlFile, files []*node, space *spaceR
 		if blocker != nil && err == nil {
 			what += fmt.Sprintf(", saved as %s (a different file has its name)", filepath.Base(final))
 		}
-		fmt.Printf("  %-*s  %s\n", nameW, truncate(n.relPath, 50), what)
+		whats[i] = what
+		nameW = max(nameW, dispWidth(n.relPath))
+		whatW = max(whatW, dispWidth(what))
+	}
+	nameW, whatRoom := fitNames(outputCols(), 4, nameW, whatW)
+	for i, n := range files {
+		what := whats[i]
+		if whatRoom > 0 {
+			what = truncate(what, whatRoom)
+		}
+		fmt.Printf("  %s  %s\n", padRight(n.relPath, nameW), what)
 	}
 	fmt.Printf("\n%s selected, %s to transfer\n", plural(len(files), "file"), formatBytes(remain))
 	if space != nil {

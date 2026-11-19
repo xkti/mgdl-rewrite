@@ -169,3 +169,24 @@ func TestDashboardUsesWidth(t *testing.T) {
 		t.Errorf("80 columns: expected shortened names with the ETA kept:\n%s", narrow)
 	}
 }
+
+func TestFitNames(t *testing.T) {
+	cases := []struct {
+		cols, longest, text, nameW, textW int
+	}{
+		{0, 300, 50, 300, 0},   // piped: nothing cut
+		{200, 60, 20, 60, 135}, // fits: full names
+		{80, 60, 30, 45, 30},   // names shrink so the text fits
+		{80, 60, 70, 37, 38},   // a very long text can't take more than half
+		{20, 60, 10, minNameW, 7},
+	}
+	for _, c := range cases {
+		n, w := fitNames(c.cols, 4, c.longest, c.text)
+		if n != c.nameW || w != c.textW {
+			t.Errorf("fitNames(%d, 4, %d, %d) = %d, %d; want %d, %d", c.cols, c.longest, c.text, n, w, c.nameW, c.textW)
+		}
+		if c.cols > 0 && 4+n+w > c.cols-1 && n > minNameW {
+			t.Errorf("cols %d: line of %d columns would wrap", c.cols, 4+n+w)
+		}
+	}
+}

@@ -707,14 +707,11 @@ func linkReport(runs []*linkRun, cols int) []string {
 		labelW = max(labelW, dispWidth(labels[i]))
 		outW = max(outW, dispWidth(outcomes[i]))
 	}
-	if cols > 0 {
-		// The last column stays free so no line wraps.
-		labelW = max(minNameW, min(labelW, cols-1-indent-gap-outW))
-	}
+	labelW, outRoom := fitNames(cols, indent+gap, labelW, outW)
 	for i := range groups {
 		out := outcomes[i]
-		if cols > 0 {
-			out = truncate(out, cols-1-indent-gap-labelW) // a long reason on a narrow terminal
+		if outRoom > 0 {
+			out = truncate(out, outRoom) // a long reason on a narrow terminal
 		}
 		lines = append(lines, fmt.Sprintf("%*s%s%*s%s", indent, "", padRight(labels[i], labelW), gap, "", colourStatus(status[i], out)))
 	}

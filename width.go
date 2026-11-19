@@ -89,3 +89,27 @@ func padRight(s string, n int) string {
 	s = truncate(s, n)
 	return s + strings.Repeat(" ", max(0, n-dispWidth(s)))
 }
+
+// fitNames sizes a two-column listing, name then text (an outcome or plan), each
+// line taking lead columns of indent and gap besides. cols is the terminal width,
+// or 0 when piped: then nothing is cut. Names get their full width when the line
+// fits; otherwise the name column shrinks to leave the longest text its room, but
+// never below half the line (or minNameW), and text that still doesn't fit is cut
+// to textW (0: no limit). The last column stays free so no line wraps.
+func fitNames(cols, lead, longest, longestText int) (nameW, textW int) {
+	if cols <= 0 {
+		return longest, 0
+	}
+	room := cols - 1 - lead // for name + text
+	nameW = max(minNameW, min(longest, max(room-longestText, room/2)))
+	return nameW, max(1, room-nameW)
+}
+
+// outputCols is the width listings are fitted to: the terminal's, or 0 (no limit)
+// when stdout is piped.
+func outputCols() int {
+	if con.tty {
+		return terminalWidth()
+	}
+	return 0
+}
