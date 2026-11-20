@@ -47,7 +47,7 @@ Interrupted? Run the same command again and it picks up where it stopped.
 | `-C, --chunk-size SIZE` | `256M` | Bytes per request; `K/M/G` are binary (1024). Min `128M`. |
 | `--sequential` | off | One chunk at a time per file, no preallocation. Can't resume a partial started in parallel. |
 | `-r, --retries N` | `5` | Attempts per chunk; `0` = forever. Resets after real progress. |
-| `-x, --proxy LIST` | 4 built-in Workers | Comma-separated proxy domains, picked at random per request. |
+| `-x, --proxy LIST` | 4 built-in Workers | Comma-separated proxy domains, picked at random per chunk. |
 | `--direct` | off | Skip the proxy. |
 | `-p, --path PATH` | | File or folder to download, relative to the link's top folder (for a subfolder link too, which it narrows further). Repeatable. With several links it applies to each; links with no match are skipped, and a path that matches in none of them stops the run. |
 | `-l, --list` | | Print the file tree with sizes, then exit. |
@@ -59,7 +59,7 @@ Interrupted? Run the same command again and it picks up where it stopped.
 | `-i, --input FILE` | | Read links from a file (`-` = stdin). `#` comments allowed. |
 | `--no-space-check` | | Don't check free disk space before downloading. |
 | `-v, --verbose` | | Log every stage to stderr. `MGDL_DEBUG=1` does the same. |
-| `--log FILE` | | Also write a log to FILE (appended): the command line, everything printed, `-v` detail, progress every 10 s and how the run ended. |
+| `--log FILE` | | Write verbose logs to FILE (appended): the command line, everything printed, `-v` detail, progress every 10 s and how the run ended. |
 | `-V, --version` | | Print the version. |
 | `-h, --help` | | Show the help. |
 

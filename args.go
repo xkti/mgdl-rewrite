@@ -255,15 +255,6 @@ func splitProxies(s string) []string {
 	return out
 }
 
-// defaultProxyList formats defaultProxies for the usage text, one per line.
-func defaultProxyList() string {
-	hosts := make([]string, len(defaultProxies))
-	for i, p := range defaultProxies {
-		hosts[i] = strings.TrimPrefix(p, "https://")
-	}
-	return strings.Join(hosts, ",\n                          ")
-}
-
 func usage(w io.Writer) {
 	fmt.Fprintf(w, `mgdl %s — MEGA.nz downloader with on-the-fly decryption and verification
 
@@ -298,32 +289,29 @@ Transfer:
   -r, --retries N         attempts per chunk; 0 = retry forever (default 5)
       --limit-rate RATE   total bandwidth cap, e.g. 40M, 500K (default unlimited)
   -x, --proxy LIST        comma-separated proxy domains, one picked at random per
-                          request (default:
-                          %s)
+                          chunk (default: %d built in)
       --direct            don't use a proxy; fetch from MEGA directly
   -i, --input FILE        read links from FILE, one per line ("-" = stdin)
       --no-space-check    don't check for free disk space before downloading
 
 Verification:
       --no-verify         decrypt only; skip the MAC check
-      --verify-existing   re-verify already-downloaded files instead of skipping them
+      --verify-existing   re-verify already downloaded files instead of skipping them
 
 Output:
   -v, --verbose           detailed logging of every stage (to stderr)
-      --log FILE          also keep a detailed log of the run in FILE
+      --log FILE          write verbose logs to FILE
   -V, --version           print the version
   -h, --help              show this help
 
-Files are decrypted and verified while they download, into NAME.part, and get
-their final name only once complete and verified. Progress is saved in a control
-file (.mgdl-HANDLE, beside the file or at the top of the folder) so an interrupted
-run resumes where it stopped: just run the same command again.
+Files download into NAME.part and get their final name only once complete and
+verified. Progress is saved in a .mgdl-HANDLE file, so an interrupted run resumes
+when you run the same command again.
 
-Several links download together, sharing the -j file slots. Folders with the
-same name are merged; if two links have a file with the same name, both are kept
-and the later one gets its MEGA handle added to its name.
+Multiple links share the -j slots. Same-named folders merge, and clashing file
+names get the MEGA handle added to the later file's name.
 
-When stdout is not a terminal, the live dashboard is replaced by periodic status
-lines. Sizes use binary units (1 MiB = 1024 KiB).
-`, version, defaultProxyList())
+When output is piped, the live dashboard becomes periodic status lines. Sizes are
+binary (1 MiB = 1024 KiB).
+`, version, len(defaultProxies))
 }
