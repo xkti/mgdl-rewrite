@@ -32,7 +32,7 @@ func cli(argv []string) (code int) {
 	cfg, err := parseArgs(argv)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "mgdl: %v\n\n", err)
-		usage(os.Stderr)
+		shortUsage(os.Stderr)
 		return 2
 	}
 	con.tty = isTerminal(os.Stdout)
