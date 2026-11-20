@@ -119,9 +119,10 @@ Tests are hermetic (`e2e_test.go` runs a fake API + storage + proxy with
   parallel partial with `--sequential` is refused up front (`checkModes`).
 - **Retries:** per chunk, counter reset after ≥ 8 MiB of progress; stalls (60s
   silent) are retried. Throttling — HTTP 429/503/509 and API -4/-6 — is waited out
-  without spending a retry (up to 20; API throttles wait 5s, 10s, … up to 30s).
+  without spending a retry (up to 20; API throttles and HTTP 509 wait 5s, 10s, …
+  up to 30s, ignoring `Retry-After`; 429/503 honour `Retry-After`, else 20s).
   The first wait per file prints one notice with the reason (`rate limited (HTTP
-  509), waiting 20s`); the rest only show on the dashboard row and in `-v`. Link
+  509), waiting 5s`); the rest only show on the dashboard row and in `-v`. Link
   lookups do the same once per link (`withThrottleNote` → `call`), except under
   the picker, whose header shows a countdown instead (printing would garble it).
   Permanent API errors (-2, -8, -9, -11, -14, -16, -17) and local disk errors fail

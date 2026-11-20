@@ -55,8 +55,9 @@ func (e *localError) Unwrap() error { return e.err }
 // throttleError is an upstream (storage, proxy or the API) asking us to slow down
 // rather than a failure.
 type throttleError struct {
-	what  string // "HTTP 509", "API -4"
-	after time.Duration
+	what    string // "HTTP 509", "API -4"
+	after   time.Duration
+	stepped bool // wait like an API throttle (throttleDelay), set by the chunk loop
 }
 
 func (e *throttleError) Error() string {
@@ -520,8 +521,11 @@ func (j *job) fetchChunk(ctx context.Context, ci int) error {
 		var te *throttleError
 		if errors.As(err, &ae) && ae.throttled() {
 			// The link request was throttled: wait longer each time, like call does.
-			te = &throttleError{what: fmt.Sprintf("API %d", int(ae)), after: throttleDelay(throttled + 1)}
+			te = &throttleError{what: fmt.Sprintf("API %d", int(ae)), stepped: true}
 			err = te
+		}
+		if errors.As(err, &te) && te.stepped {
+			te.after = throttleDelay(throttled + 1)
 		}
 		if errors.As(err, &te) && throttled < maxThrottleWaits {
 			throttled++
@@ -597,6 +601,9 @@ func (j *job) attemptChunk(ctx context.Context, ci int, label string) error {
 		if resp.ContentLength >= 0 && resp.ContentLength != want {
 			return fmt.Errorf("%s: server offered %d bytes, expected %d", hostOr(proxy, "storage"), resp.ContentLength, want)
 		}
+	case resp.StatusCode == 509:
+		// Bandwidth limit: stepped waits like the API's -4/-6, Retry-After ignored.
+		return &throttleError{what: "HTTP 509", stepped: true}
 	case isThrottle(resp.StatusCode):
 		return &throttleError{what: "HTTP " + strconv.Itoa(resp.StatusCode), after: retryAfter(resp, 20*time.Second)}
 	default:
