@@ -28,7 +28,7 @@ func main() {
 
 // cli runs one invocation and returns the exit status: 0 success, 1 failures,
 // 2 usage error, 130 interrupted.
-func cli(argv []string) int {
+func cli(argv []string) (code int) {
 	cfg, err := parseArgs(argv)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "mgdl: %v\n\n", err)
@@ -38,15 +38,18 @@ func cli(argv []string) int {
 	con.tty = isTerminal(os.Stdout)
 	con.errTTY = isTerminal(os.Stderr)
 	con.verbose = cfg.verbose
+	outcome := "stopped"
 	if cfg.logFile != "" {
-		if err := openLog(cfg.logFile); err != nil {
+		if err := openLog(cfg.logFile, argv); err != nil {
 			fmt.Fprintf(os.Stderr, "mgdl: %v\n", err)
 			return 2
 		}
 		defer con.logFile.Close()
+		defer func() { logExit(code, outcome) }()
 	}
 	if cfg.selectTUI && (!isTerminal(os.Stdin) || !con.tty) {
-		fmt.Fprintln(os.Stderr, "mgdl: --select needs an interactive terminal; use --path or --list instead")
+		errorf("--select needs an interactive terminal; use --path or --list instead")
+		outcome = "not started: --select needs an interactive terminal"
 		return 2
 	}
 	debugf("config: %+v", *cfg)
@@ -71,6 +74,7 @@ func cli(argv []string) int {
 					os.Stdout.WriteString("\x1b[?25h") // the dashboard hid the cursor
 				}
 				fmt.Fprintln(os.Stderr, "\nforced exit — progress up to the last checkpoint (≤2s ago) is saved")
+				logExit(130, "forced exit, progress up to the last checkpoint saved")
 				os.Exit(130)
 			}
 		}
@@ -80,36 +84,28 @@ func cli(argv []string) int {
 	dl := newDownloadHTTPClient()
 
 	st, runs, err := runLinks(ctx, cfg, api, dl)
+	outcome = runOutcome(cfg, runs, err)
 	if errors.Is(err, errSelectCancelled) {
 		return 0 // the picker said so; there is nothing to report
 	}
 	// One link: its name over the totals. Several: a line per link, then the
 	// totals for all of them.
 	if len(runs) > 1 && !cfg.list && !cfg.dryRun {
-		fmt.Println()
-		for _, line := range linkReport(runs, outputCols()) {
-			fmt.Println(line)
-		}
+		outf("\n%s", strings.Join(linkReport(runs, outputCols()), "\n"))
 		if st.ran {
-			fmt.Println()
-			for _, line := range st.lines("") {
-				fmt.Println(line)
-			}
+			outf("\n%s", strings.Join(st.lines(""), "\n"))
 		}
 	} else if st.ran {
-		fmt.Printf("\n%s\n", runTitle(runs))
-		for _, line := range st.lines("  ") {
-			fmt.Println(line)
-		}
+		outf("\n%s\n%s", runTitle(runs), strings.Join(st.lines("  "), "\n"))
 	}
 	if errors.Is(err, context.Canceled) {
-		fmt.Fprintln(os.Stderr, "\ninterrupted — progress saved, run the same command again to resume")
+		stderrf("NOTE", "\ninterrupted — progress saved, run the same command again to resume")
 		return 130
 	}
 	// Errors were printed as they happened, except files that failed during the
 	// download: for a single link, list them here (with several, the report says).
 	if len(runs) == 1 && runs[0].status == statusPartial {
-		fmt.Fprintf(os.Stderr, "mgdl: %v\n", runs[0].err)
+		errorf("%v", runs[0].err)
 	}
 	if err != nil || st.failed > 0 {
 		return 1
@@ -117,23 +113,54 @@ func cli(argv []string) int {
 	return 0
 }
 
+// runOutcome sums up how the run ended, in the report's words, for the log's
+// closing line.
+func runOutcome(cfg *config, runs []*linkRun, err error) string {
+	switch {
+	case errors.Is(err, errSelectCancelled):
+		return "selection cancelled, nothing downloaded"
+	case errors.Is(err, context.Canceled):
+		return "interrupted, progress saved"
+	case len(runs) == 0:
+		return "nothing to do"
+	}
+	// --list and --dry-run leave the links that got through planning queued.
+	for _, lr := range runs {
+		if lr.status == statusQueued {
+			lr.status = statusDone
+			defer func() { lr.status = statusQueued }()
+		}
+	}
+	_, out := groupOutcome(runs)
+	if len(runs) > 1 {
+		out = plural(len(runs), "link") + ": " + out
+	}
+	switch {
+	case cfg.list:
+		out = "listed; " + out
+	case cfg.dryRun:
+		out = "dry run, nothing downloaded; " + out
+	}
+	return out
+}
+
 // dryRun reports what a download would do, without transferring or writing anything.
 // space is nil when it isn't to be reported here (--no-space-check, or several
 // links, which dryRunSpace reports together).
 func dryRun(cfg *config, t *tree, ctl *controlFile, files []*node, space *spaceReport) {
-	fmt.Printf("%s\n", t.title())
-	fmt.Printf("  output:  %s\n", t.baseDir(cfg.output))
-	fmt.Printf("  control: %s\n", ctl.path)
+	outf("%s", t.title())
+	outf("  output:  %s", t.baseDir(cfg.output))
+	outf("  control: %s", ctl.path)
 	if cfg.direct {
-		fmt.Printf("  proxy:   none (direct)\n")
+		outf("  proxy:   none (direct)")
 	} else {
-		fmt.Printf("  proxy:   %s\n", strings.Join(cfg.proxies, ", "))
+		outf("  proxy:   %s", strings.Join(cfg.proxies, ", "))
 	}
 	mode := fmt.Sprintf("parallel, %s × %s", plural(cfg.jobs, "file"), plural(cfg.connections, "connection"))
 	if cfg.sequential {
 		mode = fmt.Sprintf("sequential, %s at once", plural(cfg.jobs, "file"))
 	}
-	fmt.Printf("  mode:    %s, %s chunks, verify %v\n\n", mode, formatBytes(cfg.chunkSize), cfg.verify)
+	outf("  mode:    %s, %s chunks, verify %v\n", mode, formatBytes(cfg.chunkSize), cfg.verify)
 
 	// Work out every line first, so the columns can be fitted to the terminal.
 	var remain int64
@@ -174,9 +201,9 @@ func dryRun(cfg *config, t *tree, ctl *controlFile, files []*node, space *spaceR
 		if whatRoom > 0 {
 			what = truncate(what, whatRoom)
 		}
-		fmt.Printf("  %s  %s\n", padRight(n.relPath, nameW), what)
+		outf("  %s  %s", padRight(n.relPath, nameW), what)
 	}
-	fmt.Printf("\n%s selected, %s to transfer\n", plural(len(files), "file"), formatBytes(remain))
+	outf("\n%s selected, %s to transfer", plural(len(files), "file"), formatBytes(remain))
 	if space != nil {
 		printSpace(*space, "a real run would stop here")
 	}
@@ -187,11 +214,11 @@ func dryRun(cfg *config, t *tree, ctl *controlFile, files []*node, space *spaceR
 func printSpace(r spaceReport, short string) {
 	switch {
 	case r.err != nil:
-		fmt.Printf("free space in %s is unknown (%v)\n", r.dir, r.err)
+		outf("free space in %s is unknown (%v)", r.dir, r.err)
 	case r.short():
-		fmt.Printf("%v %s — %s\n", errNoSpace, r.shortfall(), short)
+		outf("%v %s — %s", errNoSpace, r.shortfall(), short)
 	default:
-		fmt.Printf("%s to download, %s free in %s\n", formatBytes(r.need), formatBytes(r.free), r.dir)
+		outf("%s to download, %s free in %s", formatBytes(r.need), formatBytes(r.free), r.dir)
 	}
 }
 

@@ -49,7 +49,7 @@ Tests are hermetic (`e2e_test.go` runs a fake API + storage + proxy with
 | `disk_*.go` | Free space and `markSparse`, per platform. |
 | `download.go` | Per-file job: prepare/reconcile state, parallel or sequential chunk workers, per-attempt fetch with decrypt+MAC+checkpoint, retry/throttle/stall logic, MAC check, `--verify-existing`. |
 | `progress.go` | Dashboard (ported from dl) / plain-mode status lines; `summary` collects the closing figures (`runStats`, printed by `main` via `lines`). |
-| `log.go` | `infof`/`warnf`/`debugf`; erases and redraws the dashboard around each line. |
+| `log.go` | `infof`/`warnf`/`noticef`/`debugf`, `outf`/`errorf` (stdout/stderr as is); erases and redraws the dashboard around each line; the `--log` file (`CMD`, every printed line, `PROG`, `EXIT`). |
 | `select.go` | `--select` picker for all links at once (raw mode, alternate screen): sections fill in as links load, same-named folders merged, duplicates yellow. |
 | `term*.go` | TTY detection, width, Windows VT enablement. |
 | `util.go` | `--limit-rate` token bucket, `parseSize`/`formatBytes`/speed/ETA/duration formatting, `bar`, `plural`. |
@@ -147,6 +147,11 @@ Tests are hermetic (`e2e_test.go` runs a fake API + storage + proxy with
   link's item, both are marked `node.dup`, and the rename is a notice, not a warning.
   `sanitize` returns the reason; every rename among the selected files (all files
   with `--list`) is reported on **stderr** via `noticef`, never stdout.
+- **The `--log` file gets everything printed.** One `TIME LEVEL text` line per
+  printed line (colours stripped, blank lines dropped), starting with `CMD` (the
+  command line, shell-quoted) and ending with `EXIT` (`runOutcome` + exit status);
+  the progress line goes in as `PROG` every 10s, dashboard or not. Print through
+  `infof`/`outf`/`errorf`/… rather than `fmt` so nothing is missed.
 - **Piped stdout:** no cursor movement; plain timestamped lines, status every 10s.
 - **Terminal output is measured in display columns** (`dispWidth`), never runes or
   bytes, and every drawn line stays narrower than the terminal so none wraps.

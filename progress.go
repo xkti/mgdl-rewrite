@@ -168,9 +168,10 @@ type progress struct {
 	speedWindow  time.Duration
 	minSpeedSpan time.Duration
 
-	lastLines int   // lines in the frame on screen
-	lastWidth []int // display width of each of those lines, to tell how a resize re-wrapped them
-	tty       bool
+	lastLines  int       // lines in the frame on screen
+	lastLogged time.Time // when the status line last went to the --log file
+	lastWidth  []int     // display width of each of those lines, to tell how a resize re-wrapped them
+	tty        bool
 
 	stopOnce sync.Once
 	quit     chan struct{}
@@ -209,12 +210,14 @@ func (p *progress) start(ctx context.Context) {
 	// Seed the speed window, so the first plain-mode report (10s in) has a span to
 	// average over rather than showing a placeholder.
 	p.recordSample(time.Now())
+	p.lastLogged = time.Now()
 	if p.tty {
 		os.Stdout.WriteString("\x1b[?25l") // hide the cursor while we redraw
 		con.erase, con.paint = p.eraseLocked, p.renderLocked
 	} else {
 		fmt.Printf("%s\n%s, %s\n\n", p.title, plural(p.totalFiles, "file"), formatBytes(p.totalBytes))
 	}
+	con.toFileLocked("INFO", fmt.Sprintf("%s\n%s, %s", p.title, plural(p.totalFiles, "file"), formatBytes(p.totalBytes)))
 	con.mu.Unlock()
 
 	p.wg.Go(func() {
@@ -430,10 +433,16 @@ func (p *progress) renderLocked() {
 		eta = formatDuration(time.Duration(slowestFile * float64(time.Second)))
 	}
 
+	status := fmt.Sprintf("%d/%d done%s  %s left  %s  ETA %s",
+		completed+skipped, p.totalFiles, failedSuffix(failed),
+		formatBytes(int64(remaining)), formatSpeed(agg), eta)
+	// The log gets the status line every plainInterval, dashboard or not.
+	if now.Sub(p.lastLogged) >= plainInterval-refreshInterval/2 {
+		p.lastLogged = now
+		con.toFileLocked("PROG", status)
+	}
 	if !p.tty {
-		fmt.Printf("[%s] %d/%d done%s  %s left  %s  ETA %s\n",
-			now.Format("15:04:05"), completed+skipped, p.totalFiles, failedSuffix(failed),
-			formatBytes(int64(remaining)), formatSpeed(agg), eta)
+		fmt.Printf("[%s] %s\n", now.Format("15:04:05"), status)
 		return
 	}
 
@@ -465,9 +474,7 @@ func (p *progress) renderLocked() {
 			padRight(r.name, nameW), rowSizeW, formatBytes(r.total), barCol, pct(r.done, r.total), conns, tail))
 	}
 	lines = append(lines, rule)
-	lines = append(lines, fmt.Sprintf(" %d/%d done%s  %s left  %s  ETA %s",
-		completed+skipped, p.totalFiles, failedSuffix(failed),
-		formatBytes(int64(remaining)), formatSpeed(agg), eta))
+	lines = append(lines, " "+status)
 
 	// Go back to the top of the previous frame (counting rows a shrink re-wrapped),
 	// overwrite it line by line, and clear whatever is left below. Every line stays

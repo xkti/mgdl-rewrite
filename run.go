@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"os"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -89,10 +88,10 @@ func firstLine(s string) string {
 // linkError prints a link's error as it happens. With several links, it says which.
 func linkError(lr *linkRun, total int, err error) {
 	if total > 1 {
-		fmt.Fprintf(os.Stderr, "mgdl: link %d: %v\n", lr.idx, err)
+		errorf("link %d: %v", lr.idx, err)
 		return
 	}
-	fmt.Fprintf(os.Stderr, "mgdl: %v\n", err)
+	errorf("%v", err)
 }
 
 // runLinks plans and downloads every link in cfg.links. The error is
@@ -247,7 +246,7 @@ func planLinks(ctx context.Context, cfg *config, api *apiClient) (runs []*linkRu
 		}
 		// A -p that matches nothing anywhere is most likely a typo: stop.
 		if err := unmatchedPaths(cfg.paths, pathHit, runs); err != nil {
-			fmt.Fprintf(os.Stderr, "mgdl: %v\n", err)
+			errorf("%v", err)
 			for _, lr := range runs {
 				if lr.status == statusQueued {
 					lr.stop(statusNotStarted, err)
@@ -265,12 +264,14 @@ func planLinks(ctx context.Context, cfg *config, api *apiClient) (runs []*linkRu
 		t := lr.tree
 		if total > 1 && (cfg.list || cfg.dryRun) {
 			if lr.idx > 1 {
-				fmt.Println()
+				outf("")
 			}
 			infof("[%d/%d] %s", lr.idx, total, lr.raw)
 		}
 		if cfg.list {
-			printTree(os.Stdout, t, cfg.verbose)
+			var b strings.Builder
+			printTree(&b, t, cfg.verbose)
+			outf("%s", strings.TrimSuffix(b.String(), "\n"))
 			for _, note := range renameNotes(t, t.files) {
 				noticef("%s", note)
 			}
@@ -447,7 +448,7 @@ func pick(ctx context.Context, runs []*linkRun, arrivals <-chan *linkRun, accept
 	case interrupted:
 		return false, false
 	case err != nil:
-		fmt.Fprintf(os.Stderr, "mgdl: %v\n", err)
+		errorf("%v", err)
 		return false, false
 	case ev == pickerCancelled:
 		infof("selection cancelled, nothing downloaded")
@@ -538,7 +539,7 @@ func checkSpace(cfg *config, runs []*linkRun, total int) {
 		if total > 1 {
 			err = fmt.Errorf("%s not started: %w", plural(len(queued), "link"), err)
 		}
-		fmt.Fprintf(os.Stderr, "mgdl: %v\n", err)
+		errorf("%v", err)
 		for _, lr := range queued {
 			lr.stop(statusNotStarted, err)
 			lr.note = errNoSpace.Error()
@@ -563,7 +564,7 @@ func dryRunSpace(cfg *config, runs []*linkRun) {
 	for _, lr := range queued {
 		files += len(lr.files)
 	}
-	fmt.Printf("\nAll links: %s from %s\n", plural(files, "file"), plural(len(queued), "link"))
+	outf("\nAll links: %s from %s", plural(files, "file"), plural(len(queued), "link"))
 	printSpace(spaceFor(cfg, queued), "a real run wouldn't start "+plural(len(queued), "link"))
 }
 

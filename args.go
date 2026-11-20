@@ -310,7 +310,7 @@ Verification:
 
 Output:
   -v, --verbose           detailed logging of every stage (to stderr)
-      --log FILE          also write detailed logs to FILE
+      --log FILE          also keep a detailed log of the run in FILE
   -V, --version           print the version
   -h, --help              show this help
 

@@ -59,7 +59,7 @@ Interrupted? Run the same command again and it picks up where it stopped.
 | `-i, --input FILE` | | Read links from a file (`-` = stdin). `#` comments allowed. |
 | `--no-space-check` | | Don't check free disk space before downloading. |
 | `-v, --verbose` | | Log every stage to stderr. `MGDL_DEBUG=1` does the same. |
-| `--log FILE` | | Also write detailed logs to a file. |
+| `--log FILE` | | Also write a log to FILE (appended): the command line, everything printed, `-v` detail, progress every 10 s and how the run ended. |
 | `-V, --version` | | Print the version. |
 | `-h, --help` | | Show the help. |
 
