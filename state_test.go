@@ -36,3 +36,27 @@ func TestControlSaveRetriesAfterFailure(t *testing.T) {
 		t.Fatalf("state not saved on the retry: %v", err)
 	}
 }
+
+// Older control files don't record the chunk size; it's read back from the layout.
+func TestPlannedChunkFromLayout(t *testing.T) {
+	for _, c := range []int64{128 << 20, 149 << 20, 512 << 20, 1 << 30} {
+		s := &fileState{Chunks: planChunks(3*c+12345, c)}
+		if got := s.plannedChunk(); got != c {
+			t.Errorf("layout of %s read back as %s", formatSizeArg(c), formatSizeArg(got))
+		}
+	}
+	if got := (&fileState{Chunks: planChunks(100, 128<<20)}).plannedChunk(); got != 0 {
+		t.Errorf("one chunk can't tell the size, got %d", got)
+	}
+	if got := (&fileState{Chunk: 7 << 20, Chunks: planChunks(100, 7<<20)}).plannedChunk(); got != 7<<20 {
+		t.Errorf("recorded size ignored, got %d", got)
+	}
+}
+
+func TestFormatSizeArg(t *testing.T) {
+	for n, want := range map[int64]string{149 << 20: "149M", 512 << 20: "512M", 1 << 30: "1G", 3 << 29: "1536M", 1500: "1.5 KiB"} {
+		if got := formatSizeArg(n); got != want {
+			t.Errorf("formatSizeArg(%d) = %q, want %q", n, got, want)
+		}
+	}
+}

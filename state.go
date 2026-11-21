@@ -66,10 +66,13 @@ type fileState struct {
 	Verify bool   `json:"verify"` // false if started with --no-verify: cannot verify later
 	// NoSparse: the filesystem can't hold sparse files, so the file was switched to
 	// sequential mode and must stay there (preallocating would zero-fill it).
-	NoSparse bool          `json:"nosparse,omitempty"`
-	Chunks   []*chunkState `json:"chunks"`
-	Folded   int           `json:"folded"` // chunks [0, Folded) are fully folded into Meta
-	Meta     block16       `json:"meta"`   // running meta-MAC
+	NoSparse bool `json:"nosparse,omitempty"`
+	// Chunk is the --chunk-size the layout was planned with. The layout is kept
+	// on resume whatever -C says now (plannedChunk reads older control files).
+	Chunk  int64         `json:"chunk,omitempty"`
+	Chunks []*chunkState `json:"chunks"`
+	Folded int           `json:"folded"` // chunks [0, Folded) are fully folded into Meta
+	Meta   block16       `json:"meta"`   // running meta-MAC
 }
 
 // doneBytes is how much of the file is checkpointed.
@@ -91,6 +94,20 @@ func (s *fileState) contiguous() int64 {
 		}
 	}
 	return pos
+}
+
+// plannedChunk is the --chunk-size the file's layout was planned with, or 0 if it
+// can't be told. Control files from before Chunk was recorded give it away by the
+// first chunk's end: planChunks moved it up to a MAC boundary, half a MiB past a
+// whole MiB, so rounding down gets back whole-MiB sizes exactly.
+func (s *fileState) plannedChunk() int64 {
+	if s.Chunk > 0 {
+		return s.Chunk
+	}
+	if len(s.Chunks) < 2 {
+		return 0
+	}
+	return s.Chunks[0].End &^ (1<<20 - 1)
 }
 
 func (s *fileState) complete() bool {

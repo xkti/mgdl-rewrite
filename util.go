@@ -106,6 +106,20 @@ func formatBytes(n int64) string {
 	return fmt.Sprintf("%.1f %ciB", float64(n)/float64(div), "KMGTP"[exp])
 }
 
+// formatSizeArg prints a size as it would be given on the command line ("149M",
+// "1G"), or as formatBytes does when it isn't a whole number of units.
+func formatSizeArg(n int64) string {
+	for _, u := range []struct {
+		shift  uint
+		suffix string
+	}{{40, "T"}, {30, "G"}, {20, "M"}, {10, "K"}} {
+		if n >= 1<<u.shift && n%(1<<u.shift) == 0 {
+			return strconv.FormatInt(n>>u.shift, 10) + u.suffix
+		}
+	}
+	return formatBytes(n)
+}
+
 // formatSpeed prints a transfer rate, or a placeholder before any bytes have moved.
 func formatSpeed(bps float64) string {
 	if bps <= 0 {

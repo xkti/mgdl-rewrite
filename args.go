@@ -34,6 +34,7 @@ type config struct {
 	jobs           int   // files downloaded at once
 	connections    int   // connections per file (parallel mode)
 	chunkSize      int64 // bytes per download chunk
+	chunkSet       bool  // -C was given (so a partial file's other size is worth a warning)
 	retries        int   // attempts per chunk; 0 = forever
 	proxies        []string
 	direct         bool
@@ -95,6 +96,7 @@ func parseArgs(argv []string) (*config, error) {
 			if cfg.chunkSize, err = parseSize(val); err == nil && cfg.chunkSize < minChunk {
 				err = fmt.Errorf("--chunk-size must be at least 128M")
 			}
+			cfg.chunkSet = true
 		case "r", "retries", "retry":
 			cfg.retries, err = posInt("retries", val, true)
 		case "x", "proxy":

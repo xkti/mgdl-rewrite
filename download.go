@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -92,6 +93,9 @@ type engine struct {
 	multi bool // several links in the run: status lines name each file's link folder
 
 	noSparseOnce sync.Once // the "filesystem can't do sparse files" notice
+
+	chunkWarn     string // chunkChange's warning, printed at the first resume it's about
+	chunkWarnOnce sync.Once
 }
 
 // markSparseFn flags a file sparse (a no-op where files are sparse anyway). A
@@ -265,6 +269,11 @@ func (j *job) run(ctx context.Context) (fileResult, error) {
 	j.row.begin(n.name, done, n.size)
 	if done > 0 {
 		infof("resume    %s  (%s of %s, %d%%)", j.shown, formatBytes(done), formatBytes(n.size), pct(done, n.size))
+		// Here rather than up front, where the "skip" lines of many finished
+		// files would scroll it away before anything happened.
+		if c := j.st.plannedChunk(); e.chunkWarn != "" && c > 0 && c != e.cfg.chunkSize {
+			e.chunkWarnOnce.Do(func() { warnf("%s", e.chunkWarn) })
+		}
 	}
 
 	// Pending chunks, in file order.
@@ -372,6 +381,7 @@ func (j *job) prepare() error {
 			Size:   n.size,
 			Mode:   wantMode,
 			Verify: e.cfg.verify,
+			Chunk:  e.cfg.chunkSize,
 			Chunks: planChunks(n.size, e.cfg.chunkSize),
 		}
 		j.lk.ctl.put(n.handle, st)
@@ -799,6 +809,54 @@ func (e *engine) pickProxy() string {
 		return ""
 	}
 	return e.cfg.proxies[rand.Intn(len(e.cfg.proxies))]
+}
+
+// chunkChange is the warning for a -C that differs from the size partial files
+// were planned with: their layout is kept (prepare), so the new size only applies
+// to files not started yet. Empty if -C wasn't given or no partial file differs.
+func chunkChange(cfg *config, runs []*linkRun) string {
+	if !cfg.chunkSet {
+		return ""
+	}
+	partial, fresh := 0, 0
+	var olds []string
+	for _, lr := range runs {
+		if lr.status != statusQueued || lr.ctl == nil {
+			continue
+		}
+		for _, n := range lr.files {
+			final, _, err := finalPath(cfg, lr.tree, n)
+			if err != nil || fileExists(final) {
+				continue
+			}
+			if _, ok := resumable(lr.ctl, n, final); !ok {
+				fresh++
+				continue
+			}
+			if c := lr.ctl.get(n.handle).plannedChunk(); c > 0 && c != cfg.chunkSize {
+				partial++
+				if s := formatSizeArg(c); !slices.Contains(olds, s) {
+					olds = append(olds, s)
+				}
+			}
+		}
+	}
+	if partial == 0 {
+		return ""
+	}
+	msg := fmt.Sprintf("A different chunk size was specified to what was originally set (%s instead of %s)! Ignoring for %s",
+		formatSizeArg(cfg.chunkSize), strings.Join(olds, ", "), oneOrMany(partial, "the partial file", "partial files"))
+	if fresh > 0 {
+		msg += ", changing for " + oneOrMany(fresh, "the new file", "new files") + " yet to be downloaded"
+	}
+	return msg + "."
+}
+
+func oneOrMany(n int, one, many string) string {
+	if n == 1 {
+		return one
+	}
+	return many
 }
 
 // checkModes refuses to start when --sequential would resume a parallel partial

@@ -1016,3 +1016,88 @@ func TestDecryptionFailuresHalt(t *testing.T) {
 		expectHalt(t, m, link, "cannot decrypt folder SuBdIr01")
 	})
 }
+
+// A -C other than the one a partial file was planned with keeps that file's
+// layout and says so once, after its resume line (and in a dry run), with the
+// nouns fitted to how many partial and new files there are.
+func TestChunkSizeChangeWarns(t *testing.T) {
+	interrupt := func(m *fakeMega, cfg *config, link string, size int) {
+		t.Helper()
+		ctx, cancel := context.WithCancel(context.Background())
+		m.hooks(func(total int64) {
+			if total > int64(size)/2 {
+				cancel()
+			}
+		}, 2*time.Millisecond)
+		if _, err := m.run(ctx, cfg, link); !errors.Is(err, context.Canceled) {
+			t.Fatalf("first run: %v", err)
+		}
+		m.hooks(nil, 0)
+	}
+	const head = "A different chunk size was specified to what was originally set (1M instead of 2M)! "
+
+	t.Run("file link", func(t *testing.T) {
+		m := newFakeMega(t)
+		size := 7 << 20
+		f := m.addFile("FiLe0001", "big.bin", size, 31, false)
+		cfg := m.config(t.TempDir())
+		cfg.chunkSize = 2 << 20
+		interrupt(m, cfg, m.fileLink(f), size)
+		before, _ := os.ReadFile(filepath.Join(cfg.output, ".mgdl-FiLe0001"))
+
+		// Same size, or -C not given: nothing to say.
+		cfg.chunkSet, cfg.dryRun = true, true
+		if got := captureStderr(t, func() { m.run(context.Background(), cfg, m.fileLink(f)) }); strings.Contains(got, "chunk size") {
+			t.Fatalf("same -C warned: %q", got)
+		}
+		cfg.chunkSize, cfg.chunkSet = 1<<20, false
+		if got := captureStderr(t, func() { m.run(context.Background(), cfg, m.fileLink(f)) }); strings.Contains(got, "chunk size") {
+			t.Fatalf("default -C warned: %q", got)
+		}
+
+		want := head + "Ignoring for the partial file."
+		cfg.chunkSet = true
+		if got := captureStderr(t, func() { m.run(context.Background(), cfg, m.fileLink(f)) }); strings.Count(got, want) != 1 {
+			t.Fatalf("dry run: want %q once, got %q", want, got)
+		}
+		cfg.dryRun = false
+		var err error
+		got := captureStderr(t, func() { _, err = m.run(context.Background(), cfg, m.fileLink(f)) })
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Count(got, want) != 1 {
+			t.Fatalf("run: want %q once, got %q", want, got)
+		}
+		mustEqualFile(t, filepath.Join(cfg.output, "big.bin"), f.plain)
+		var d ctlData
+		if json.Unmarshal(before, &d) != nil || d.Files["FiLe0001"].Chunk != 2<<20 {
+			t.Fatalf("chunk size not recorded: %s", before)
+		}
+	})
+
+	t.Run("folder", func(t *testing.T) {
+		m := newFakeMega(t)
+		size := 7 << 20
+		big := m.addFile("FiLeAaAa", "big.bin", size, 32, false)
+		x := m.addFile("FiLeBbBb", "x.bin", 3000, 33, false)
+		y := m.addFile("FiLeCcCc", "y.bin", 4000, 34, false)
+		link := m.publishFolder("Share", []*fakeFile{big}, []*fakeFile{x, y})
+		cfg := m.config(t.TempDir())
+		cfg.chunkSize = 2 << 20
+		cfg.paths = []string{"big.bin"}
+		interrupt(m, cfg, link, size)
+
+		cfg.paths, cfg.chunkSize, cfg.chunkSet = nil, 1<<20, true
+		want := head + "Ignoring for the partial file, changing for new files yet to be downloaded."
+		var err error
+		got := captureStderr(t, func() { _, err = m.run(context.Background(), cfg, link) })
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Count(got, want) != 1 {
+			t.Fatalf("want %q once, got %q", want, got)
+		}
+		mustEqualFile(t, filepath.Join(cfg.output, "Share", "big.bin"), big.plain)
+	})
+}

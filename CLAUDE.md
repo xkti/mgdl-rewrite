@@ -94,6 +94,11 @@ Tests are hermetic (`e2e_test.go` runs a fake API + storage + proxy with
   would put them, and the control file is the share's (`megaLink.handle` = share ID).
 - **One control file per link** (per share), all mutation through `controlFile.update` (one
   mutex), saved atomically (tmp + rename) every 2s and on exit, removed when empty.
+- **A file's chunk layout is fixed once planned.** It's saved with the file's state
+  (`fileState.Chunk` records the `-C` used; `plannedChunk` reads older files from the
+  layout), and a resume keeps it whatever `-C` says now. A `-C` given that differs
+  warns once (`chunkChange`): after the first affected `resume` line in a run (not up
+  front, where `skip` lines would scroll it away) and after the dry run's totals.
 - **Final name means verified.** Data goes to `NAME.part`; rename only after the
   MAC matches (or verification is off). Mismatch → delete + redownload, bounded by
   `-r` (3 when `-r 0`).

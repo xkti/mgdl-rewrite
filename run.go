@@ -316,6 +316,12 @@ func planLinks(ctx context.Context, cfg *config, api *apiClient) (runs []*linkRu
 	case !cfg.dryRun:
 		checkSpace(cfg, runs, total)
 	}
+	if cfg.dryRun {
+		// After the file lists and totals, so it isn't lost among them.
+		if w := chunkChange(cfg, runs); w != "" {
+			warnf("%s", w)
+		}
+	}
 	return runs, false
 }
 
@@ -585,7 +591,8 @@ func downloadAll(ctx context.Context, cfg *config, api *apiClient, hc *http.Clie
 	}
 
 	prog := newProgress(runTitle(runs), files, cfg.jobs)
-	e := &engine{cfg: cfg, api: api, http: hc, lim: newRateLimiter(cfg.limitRate), prog: prog, multi: len(runs) > 1}
+	e := &engine{cfg: cfg, api: api, http: hc, lim: newRateLimiter(cfg.limitRate), prog: prog, multi: len(runs) > 1,
+		chunkWarn: chunkChange(cfg, runs)}
 
 	// The saver outlives ctx so the final checkpoints are written after Ctrl+C.
 	saveCtx, stopSaver := context.WithCancel(context.Background())
