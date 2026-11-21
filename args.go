@@ -285,7 +285,8 @@ Selection:
                           top folder, e.g. "Season 1/ep01.mkv"); repeatable; with
                           several links, applies to each of them
   -s, --select            choose files from all links in one interactive tree
-                          (-p entries preselected)
+                          (-p entries preselected; a subfolder or file link shows
+                          the whole folder with what it points at preselected)
   -n, --dry-run           show what would be downloaded or resumed; transfer nothing
 
 Transfer:
