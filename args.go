@@ -308,6 +308,7 @@ Transfer:
 Verification:
       --no-verify         decrypt only; skip the MAC check
       --verify-existing   re-verify already downloaded files instead of skipping them
+                          WARNING: if verification fails, mgdl will overwrite!
 
 Output:
   -v, --verbose           detailed logging of every stage (to stderr)
