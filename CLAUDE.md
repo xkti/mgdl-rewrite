@@ -2,6 +2,64 @@
 
 Guidance for working on `mgdl`, a Go MEGA.nz downloader (rewrite of
 `../mg-download.sh`, UI modelled on `../dl`, verification from `../mg-verify`).
+It decrypts **and verifies** files while they download, resumes interrupted
+downloads without re-reading what is on disk, and fetches large files in parallel
+chunks through a Cloudflare Worker proxy. `README.md` is the user's own, written
+for the public; this file is the reference for how mgdl actually behaves.
+
+## What it does (user's view)
+
+```sh
+mgdl https://mega.nz/file/ID#KEY                     # a file
+mgdl https://mega.nz/folder/ID#KEY                   # a folder, into ./FolderName/
+mgdl https://mega.nz/folder/ID#KEY/folder/HANDLE     # a subfolder, in its place in ./FolderName/
+mgdl https://mega.nz/folder/ID#KEY/file/HANDLE       # one file from a folder, likewise
+mgdl -l LINK                                         # list the tree and exit
+mgdl -p 'Season 1' -p extras/notes.txt LINK          # only these paths
+mgdl -s LINK                                         # pick files interactively
+mgdl -n LINK                                         # dry run
+mgdl -C 128M -c 8 -o /mnt/media LINK                 # smaller chunks, more connections
+mgdl -i links.txt                                    # many links, one per line
+```
+
+Legacy links (`https://mega.nz/#!ID!KEY`, `https://mega.nz/#F!ID!KEY`) work too.
+Running the same command again resumes. The usage text in `args.go` (`usage`) is
+the authority; keep this table in step with it.
+
+| Flag | Default | Meaning |
+|---|---|---|
+| `-o, --output DIR` | `.` | Download destination. |
+| `-j, --jobs N` | `4` | Files downloaded at once (shared by all links). |
+| `-c, --connections N` | `4` | Connections per file (chunks fetched in parallel). |
+| `-C, --chunk-size SIZE` | `256M` | Bytes per request; binary suffixes. Min `128M`. Fixed per file once planned. |
+| `--sequential` | off | One chunk at a time per file, no preallocation. Refused for a partial started in parallel. |
+| `-r, --retries N` | `5` | Attempts per chunk (`--retry` also accepted); `0` = forever. Resets after ≥ 8 MiB progress. |
+| `-x, --proxy LIST` | 5 built in (`defaultProxies`) | Comma-separated proxy domains (`https://` added if missing), one picked at random per chunk attempt. Repeatable. |
+| `--direct` | off | Skip the proxy. |
+| `-p, --path PATH` | | File or folder relative to the link's top folder. Repeatable; applies to every link. |
+| `-l, --list` | | Print the tree with sizes, then exit. |
+| `-s, --select` | | Interactive picker over all links (`-p` entries and subfolder/file links preselected). Needs a TTY on stdin and stdout (exit 2 otherwise). |
+| `-n, --dry-run` | | Report what would be downloaded/resumed/skipped. Writes nothing. |
+| `--no-verify` | | Decrypt only; skip the MAC check. Also disables `--verify-existing`. |
+| `--verify-existing` | | Re-check finished files on disk; one that fails is deleted and downloaded again (the usage text warns). |
+| `--limit-rate RATE` | | Total bandwidth cap, e.g. `40M`. |
+| `-i, --input FILE` | | Links from a file (`-` = stdin), one per line, `#` comments, CRLF ok. Repeatable; added after command-line links. |
+| `--no-space-check` | | Skip the free-space check. |
+| `-v, --verbose` | | `-v` detail to stderr. `MGDL_DEBUG=1` does the same. |
+| `--log FILE` | | Append everything printed plus `-v` detail to FILE (see invariants). |
+| `-V, --version` / `-h, --help` | | Version / full usage. A usage error prints only `shortUsage`. |
+
+Short flags bundle (`-nv`, `-j8`), flags may go anywhere, `--` ends flags.
+Exit status: 0 success (or picker cancelled), 1 any failure, 2 usage error (or
+`--select` without a terminal, or `--log` can't be opened), 130 interrupted.
+First Ctrl+C/SIGTERM stops gracefully and saves the control file; a second one
+more than 1s later exits at once (progress up to the last 2s checkpoint is kept).
+
+Data path, briefly: metadata from the MEGA API over the user's own connection;
+data via `PROXY/http://gfs…/dl/…/START-END`; each chunk AES-128-CTR decrypted from
+its offset with CBC-MACs computed on the way to disk; the folded meta-MAC is
+compared with the file key's when the file completes. Everything else is in the
+invariants below.
 
 ## Constraints
 
@@ -27,8 +85,14 @@ Guidance for working on `mgdl`, a Go MEGA.nz downloader (rewrite of
 
 ```sh
 go build -trimpath -o mgdl .
+GOOS=windows GOARCH=amd64 go build -trimpath -o mgdl.exe .
 go test -race ./...
+./build.sh    # release: windows/amd64, darwin/arm64+amd64, linux/amd64 into dist/ + SHA256SUMS
 ```
+
+`build.sh` builds static (`CGO_ENABLED=0`), stripped (`-s -w`) binaries and sets
+`main.version` from `git describe --tags --always --dirty` (the source default is
+`0.1.0`).
 
 Tests are hermetic (`e2e_test.go` runs a fake API + storage + proxy with
 `httptest`; keys and handles are synthetic). No test touches the real network.
@@ -44,7 +108,7 @@ Tests are hermetic (`e2e_test.go` runs a fake API + storage + proxy with
 | `api.go` | MEGA API client: batching, seq ids, error codes, transient retries. |
 | `nodes.go` | Folder listing → decrypted tree; key selection from multi-share `k`; name sanitising and de-duplication (within a link: `finishTree`; across links: `mergeTrees`); `-p` matching; `--list` output. |
 | `crypto.go` | Key unpacking, attribute decryption, CTR IV for an offset, MAC chunk geometry, streaming `macStream`, parallel whole-file `fileMeta` (`--verify-existing`), `metaFold`, `condense`. |
-| `state.go` | The control file (`.mgdl-HANDLE`), chunk planning. |
+| `state.go` | The control file (`.mgdl-HANDLE`, in the tree's base dir: beside a file link's file, at the top of a folder's download), chunk planning. |
 | `space.go` | Free-space check: `fileNeed`, `spaceFor` (up front, per filesystem directory), `spaceGuard` (per file at start). |
 | `disk_*.go` | Free space and `markSparse`, per platform. |
 | `download.go` | Per-file job: prepare/reconcile state, parallel or sequential chunk workers, per-attempt fetch with decrypt+MAC+checkpoint, retry/throttle/stall logic, MAC check, `--verify-existing`. |
@@ -55,6 +119,10 @@ Tests are hermetic (`e2e_test.go` runs a fake API + storage + proxy with
 | `util.go` | `--limit-rate` token bucket, `parseSize`/`formatBytes`/speed/ETA/duration formatting, `bar`, `plural`. |
 | `width.go` | Display width (wide CJK/emoji = 2, combining = 0), `truncate`, `padRight`, `fitNames` (name + text listings). |
 | `resize_*.go` | `watchResize`: SIGWINCH on Unix, width polling (250 ms) on Windows. |
+| `worker/index.js` | The Cloudflare Worker that relays `*.userstorage.mega.co.nz` requests; deploy your own and pass it with `-x`. |
+| `worker/wrangler.toml` | Wrangler config for it (worker `mgdl`, entry `index.js`): `cd worker && npx wrangler deploy`, then `-x mgdl.SUBDOMAIN.workers.dev`. |
+| `build.sh` | Release cross-compile into `dist/`. |
+| `*_test.go` | `e2e_test.go` (fake API/storage/proxy, full runs), `multi_test.go` (several links), `rename_sparse_test.go`, plus unit tests per file. |
 
 ## Key invariants — don't break these
 
@@ -109,7 +177,7 @@ Tests are hermetic (`e2e_test.go` runs a fake API + storage + proxy with
   later runs. Only `--verify-existing` deletes a final-name file (on a failed check).
 - **Free space is checked, sparse files are used** (`space.go`, `disk_*.go`). Up
   front: the selection's remaining need (`fileNeed`: 0 if complete, size − done if
-  resumable) plus headroom (`spaceMargin`: the worst case for the control file and filesystem overhead, about 0.007% of the data plus ~130 KiB per file) must fit, summed over all links landing on
+  resumable) plus headroom (`spaceMargin`: the worst case for the control file and filesystem overhead, about 0.008% of the data (82 bytes per MiB) plus 1 MiB plus ~130 KiB per file) must fit, summed over all links landing on
   the same filesystem directory, or those links stop before any request. Per file at start (`spaceGuard.claim`): its need plus what in-flight files
   still have to write (`spaceNeed − spaceWritten`, updated in `record`). A shortfall
   is a `localError` (no retries). Unknown free space warns and skips the check;
@@ -154,7 +222,7 @@ Tests are hermetic (`e2e_test.go` runs a fake API + storage + proxy with
   `sanitize` returns the reason; every rename among the selected files (all files
   with `--list`) is reported on **stderr** via `noticef`, never stdout.
 - **The `--log` file gets everything printed.** One `TIME LEVEL text` line per
-  printed line (colours stripped, blank lines dropped), starting with `CMD` (the
+  printed line (colours stripped, blank lines dropped), starting (after a `=== mgdl VERSION started TIME ===` header, the file being appended to) with `CMD` (the
   command line, shell-quoted) and ending with `EXIT` (`runOutcome` + exit status);
   the progress line goes in as `PROG` every 10s, dashboard or not. Print through
   `infof`/`outf`/`errorf`/… rather than `fmt` so nothing is missed.
