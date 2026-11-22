@@ -18,7 +18,7 @@ var defaultProxies = []string{
 	"https://m.ndhqaroux.workers.dev",
 	"https://a.qi5mfqlu7.workers.dev",
 	"https://x.hit4zt0oj.workers.dev",
-        "https://p.zgn2qrkqm.workers.dev",
+	"https://p.zgn2qrkqm.workers.dev",
 }
 
 const (
