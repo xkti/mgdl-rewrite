@@ -109,7 +109,7 @@ Tests are hermetic (`e2e_test.go` runs a fake API + storage + proxy with
   later runs. Only `--verify-existing` deletes a final-name file (on a failed check).
 - **Free space is checked, sparse files are used** (`space.go`, `disk_*.go`). Up
   front: the selection's remaining need (`fileNeed`: 0 if complete, size − done if
-  resumable) plus headroom (1 MiB + 0.5%) must fit, summed over all links landing on
+  resumable) plus headroom (`spaceMargin`: the worst case for the control file and filesystem overhead, about 0.007% of the data plus ~130 KiB per file) must fit, summed over all links landing on
   the same filesystem directory, or those links stop before any request. Per file at start (`spaceGuard.claim`): its need plus what in-flight files
   still have to write (`spaceNeed − spaceWritten`, updated in `record`). A shortfall
   is a `localError` (no retries). Unknown free space warns and skips the check;

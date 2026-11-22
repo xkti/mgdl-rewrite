@@ -26,10 +26,28 @@ var freeSpaceFn = diskFree
 
 var errNoSpace = errors.New("not enough disk space")
 
-// spaceMargin is headroom on top of the data itself, for filesystem metadata and
-// the control file: 1 MiB plus 0.5%.
-func spaceMargin(need int64) int64 {
-	return 1<<20 + need/200
+// Costs behind spaceMargin, all worst cases:
+const (
+	spaceFixed   = 1 << 20   // slack for anything unforeseen
+	spacePerFile = 128 << 10 // last partly used cluster (up to 128 KiB on exFAT), directory entry, extent block
+	ctlPerFile   = 512       // a file's entry in the control file, path included
+	ctlPerChunk  = 64        // a chunk's entry in the control file
+	// Per MiB of data: one pending MAC in the control file (35 bytes of JSON), twice
+	// since a save writes a temp copy beside the old file, plus one extent (12 bytes)
+	// if the filesystem fragments a file at every MiB.
+	spacePerMiB = 2*35 + 12
+)
+
+// spaceMargin is headroom on top of the data itself, for what a run writes besides
+// it: the control file, and filesystem overhead. It adds up the worst case for
+// files files writing need bytes in all. Chunks are at least minChunk, so
+// need/minChunk + files bounds their number.
+func spaceMargin(need int64, files int) int64 {
+	f := int64(files)
+	return spaceFixed +
+		f*(spacePerFile+ctlPerFile) +
+		(need/minChunk+f)*ctlPerChunk +
+		need>>20*spacePerMiB
 }
 
 // existingDir returns dir, or its nearest ancestor that exists, which is on the
@@ -83,10 +101,11 @@ func resumable(ctl *controlFile, n *node, final string) (done int64, ok bool) {
 
 // spaceReport is the up-front check.
 type spaceReport struct {
-	dir  string
-	need int64
-	free int64
-	err  error // free space unknown
+	dir   string
+	need  int64
+	files int // files that still have something to write
+	free  int64
+	err   error // free space unknown
 }
 
 // spaceFor adds up what the links' selected files still need, against the free
@@ -97,16 +116,22 @@ func spaceFor(cfg *config, runs []*linkRun) spaceReport {
 	r := spaceReport{dir: existingDir(cfg.output)}
 	for _, lr := range runs {
 		for _, n := range lr.files {
-			r.need += fileNeed(cfg, lr.tree, lr.ctl, n)
+			need := fileNeed(cfg, lr.tree, lr.ctl, n)
+			r.need += need
+			if need > 0 {
+				r.files++
+			}
 		}
 	}
 	r.free, r.err = freeSpaceFn(r.dir)
 	return r
 }
 
+func (r spaceReport) margin() int64 { return spaceMargin(r.need, r.files) }
+
 // short reports whether the selection doesn't fit.
 func (r spaceReport) short() bool {
-	return r.err == nil && r.need > 0 && r.free < r.need+spaceMargin(r.need)
+	return r.err == nil && r.need > 0 && r.free < r.need+r.margin()
 }
 
 // shortfall says by how much a selection doesn't fit, after "not enough disk
@@ -114,7 +139,7 @@ func (r spaceReport) short() bool {
 func (r spaceReport) shortfall() string {
 	return fmt.Sprintf("in %s: %s to download, %s free (%s short, including %s headroom)",
 		r.dir, formatBytes(r.need), formatBytes(r.free),
-		formatBytes(r.need+spaceMargin(r.need)-r.free), formatBytes(spaceMargin(r.need)))
+		formatBytes(r.need+r.margin()-r.free), formatBytes(r.margin()))
 }
 
 func (r spaceReport) asError() error {
@@ -146,12 +171,14 @@ func (g *spaceGuard) claim(j *job, need int64) error {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	var others int64
+	files := 1
 	for o := range g.active {
+		files++
 		others += max(0, o.spaceNeed.Load()-o.spaceWritten.Load())
 	}
 	if need > 0 {
 		free, err := freeSpaceFn(g.dir)
-		if err == nil && free < need+others+spaceMargin(need+others) {
+		if err == nil && free < need+others+spaceMargin(need+others, files) {
 			return &localError{fmt.Errorf("%w for this file: it needs %s, %s is free and other downloads in progress still need %s",
 				errNoSpace, formatBytes(need), formatBytes(free), formatBytes(others))}
 		}

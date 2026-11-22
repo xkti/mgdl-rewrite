@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sync/atomic"
@@ -65,8 +66,8 @@ func TestSpaceCountsOnlyWhatIsLeft(t *testing.T) {
 	left := int64(size) - d.Files["FiLe0001"].doneBytes()
 
 	// Enough for what's left, not for the whole file.
-	fakeFree(t, fixedFree(left+spaceMargin(left)+64<<10))
-	if left+spaceMargin(left)+64<<10 >= int64(size) {
+	fakeFree(t, fixedFree(left+spaceMargin(left, 1)+64<<10))
+	if left+spaceMargin(left, 1)+64<<10 >= int64(size) {
 		t.Fatalf("test needs a larger resume gap (left %d of %d)", left, size)
 	}
 	if _, err := m.run(context.Background(), cfg, m.fileLink(f)); err != nil {
@@ -168,10 +169,10 @@ func TestSpaceReport(t *testing.T) {
 	if (spaceReport{need: 0, free: 0}).short() {
 		t.Fatal("nothing to download is never short")
 	}
-	if !(spaceReport{need: 10 << 20, free: 10 << 20}).short() {
+	if !(spaceReport{need: 10 << 20, files: 1, free: 10 << 20}).short() {
 		t.Fatal("no headroom should be short")
 	}
-	if (spaceReport{need: 10 << 20, free: 20 << 20}).short() {
+	if (spaceReport{need: 10 << 20, files: 1, free: 20 << 20}).short() {
 		t.Fatal("plenty of room is not short")
 	}
 	if (spaceReport{need: 10 << 20, err: errors.New("x")}).short() {
@@ -194,5 +195,61 @@ func TestDiskFreeReal(t *testing.T) {
 	n, err := diskFree(t.TempDir())
 	if err != nil || n <= 0 {
 		t.Fatalf("diskFree: %d, %v", n, err)
+	}
+}
+
+// The margin must cover what a run really writes besides the data, and stay far
+// below the old 0.5% for big sets.
+func TestSpaceMarginCoversControlFile(t *testing.T) {
+	const files = 93
+	const size = 1014 << 20 // ~1 GiB each: ~94 GiB in all
+	need := int64(files) * size
+
+	// Worst case control file: every chunk of every file listed, and every MiB's MAC
+	// waiting on a predecessor.
+	var d ctlData
+	d.Files = map[string]*fileState{}
+	for i := 0; i < files; i++ {
+		h := fmt.Sprintf("H%07d", i)
+		fs := &fileState{Path: fmt.Sprintf("folder/sub/file number %d.bin", i), Size: size,
+			Mode: modeParallel, Verify: true, Chunk: defaultChunk, Chunks: planChunks(size, minChunk)}
+		for _, c := range fs.Chunks {
+			c.Done = c.End - c.Start
+			c.MACs = make([]block16, (c.End-c.Start)>>20)
+		}
+		d.Files[h] = fs
+	}
+	raw, err := json.Marshal(&d)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctl := int64(len(raw))
+	margin := spaceMargin(need, files)
+	// Twice for the temp copy, plus the same unused cluster tails for every file.
+	if used := 2*ctl + files*spacePerFile + (need>>20)*12; margin < used {
+		t.Fatalf("margin %s is below the worst case %s (control file %s)",
+			formatBytes(margin), formatBytes(used), formatBytes(ctl))
+	}
+	if old := need / 200; margin > old/10 {
+		t.Fatalf("margin %s is not much below the old %s", formatBytes(margin), formatBytes(old))
+	}
+	t.Logf("control file %s, margin %s for %s", formatBytes(ctl), formatBytes(margin), formatBytes(need))
+}
+
+func TestSpaceMarginGrowth(t *testing.T) {
+	if got := spaceMargin(0, 0); got != spaceFixed {
+		t.Fatalf("nothing to write: %d", got)
+	}
+	if spaceMargin(1<<30, 2) <= spaceMargin(1<<30, 1) {
+		t.Fatal("more files must need more headroom")
+	}
+	if spaceMargin(2<<30, 1) <= spaceMargin(1<<30, 1) {
+		t.Fatal("more data must need more headroom")
+	}
+	// Linear, no cap: 1 TiB needs 1024 times the per-MiB part of 1 GiB.
+	a := spaceMargin(1<<30, 1) - spaceMargin(0, 1)
+	b := spaceMargin(1<<40, 1) - spaceMargin(0, 1)
+	if b < a*1000 {
+		t.Fatalf("margin is capped: %d for 1 GiB, %d for 1 TiB", a, b)
 	}
 }
