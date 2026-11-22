@@ -145,15 +145,19 @@ const maxPlaceTries = 3
 // deleted: this file goes beside it, with "_HANDLE" added. Of the candidate names,
 // the first that already holds this file (right size) or its partial download
 // wins, so a file saved beside another is found again on the next run; otherwise
-// the first that is free. blocker describes what is in the way of the usual name
-// (nil if nothing is).
+// the first that is free. A partial only counts where nothing is at the name
+// itself: a wrong-size file next to a .part is still in the way, or it would be
+// skipped as complete, or deleted by --verify-existing. blocker describes what is
+// in the way of the usual name (nil if nothing is).
 func finalPath(cfg *config, t *tree, n *node) (path string, blocker os.FileInfo, err error) {
 	p := t.localPath(cfg.output, n)
 	free := ""
 	for range maxPlaceTries {
 		fi, err := os.Stat(p)
 		switch {
-		case err == nil && !fi.IsDir() && fi.Size() == n.size, fileExists(p + ".part"):
+		case err == nil && !fi.IsDir() && fi.Size() == n.size:
+			return p, blocker, nil
+		case err != nil && fileExists(p+".part"):
 			return p, blocker, nil
 		case err != nil && free == "":
 			free = p

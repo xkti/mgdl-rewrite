@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -337,6 +338,35 @@ func TestFileInTheWayIsKept(t *testing.T) {
 	os.Remove(filepath.Join(out, "x.bin"))
 	if st, err := m.run(context.Background(), cfg, m.fileLink(f)); err != nil || st.skipped != 1 || fileExists(filepath.Join(out, "x.bin")) {
 		t.Fatalf("third run: %+v %v", st, err)
+	}
+}
+
+// A wrong-size file at the final name stays in the way even with a .part beside
+// it: it isn't skipped as complete, nor deleted by --verify-existing, and the .part
+// (which may be another link's) is left alone too.
+func TestFileInTheWayWithPartIsKept(t *testing.T) {
+	for _, verifyExisting := range []bool{false, true} {
+		t.Run(fmt.Sprintf("verifyExisting=%v", verifyExisting), func(t *testing.T) {
+			m := newFakeMega(t)
+			f := m.addFile("FiLeAaAa", "x.bin", 300, 24, false)
+			out := t.TempDir()
+			theirs := []byte("someone else's file")
+			part := []byte("someone else's partial")
+			if err := os.WriteFile(filepath.Join(out, "x.bin"), theirs, 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(out, "x.bin.part"), part, 0o644); err != nil {
+				t.Fatal(err)
+			}
+			cfg := m.config(out)
+			cfg.verifyExisting = verifyExisting
+			if st, err := m.run(context.Background(), cfg, m.fileLink(f)); err != nil || st.completed != 1 {
+				t.Fatalf("%+v %v", st, err)
+			}
+			mustEqualFile(t, filepath.Join(out, "x.bin"), theirs)
+			mustEqualFile(t, filepath.Join(out, "x.bin.part"), part)
+			mustEqualFile(t, filepath.Join(out, "x_FiLeAaAa.bin"), f.plain)
+		})
 	}
 }
 
