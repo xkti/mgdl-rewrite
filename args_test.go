@@ -53,6 +53,16 @@ func TestParseArgs(t *testing.T) {
 	if !reflect.DeepEqual(cfg.proxies, []string{"https://one.example.dev", "https://two.example.dev"}) {
 		t.Fatalf("proxies: %v", cfg.proxies)
 	}
+	cfg, err = parseArgs([]string{"-x", "one.example.dev", "--proxy=two.example.dev,three.example.dev",
+		"-xfour.example.dev", testFolderLink})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"https://one.example.dev", "https://two.example.dev",
+		"https://three.example.dev", "https://four.example.dev"}
+	if !reflect.DeepEqual(cfg.proxies, want) {
+		t.Fatalf("repeated -x: %v", cfg.proxies)
+	}
 	if !reflect.DeepEqual(cfg.links, []string{testFolderLink}) {
 		t.Fatalf("links: %v", cfg.links)
 	}

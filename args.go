@@ -101,7 +101,7 @@ func parseArgs(argv []string) (*config, error) {
 		case "r", "retries", "retry":
 			cfg.retries, err = posInt("retries", val, true)
 		case "x", "proxy":
-			proxies = val
+			proxies += "," + val
 		case "direct":
 			cfg.direct = true
 		case "p", "path":
@@ -301,7 +301,7 @@ Transfer:
   -r, --retries N         attempts per chunk; 0 = retry forever (default 5)
       --limit-rate RATE   total bandwidth cap, e.g. 40M, 500K (default unlimited)
   -x, --proxy LIST        comma-separated proxy domains, one picked at random per
-                          chunk (default: %d built in)
+                          chunk; repeatable (default: %d built in)
       --direct            don't use a proxy; fetch from MEGA directly
   -i, --input FILE        read links from FILE, one per line ("-" = stdin)
       --no-space-check    don't check for free disk space before downloading
