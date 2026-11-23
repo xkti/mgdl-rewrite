@@ -87,7 +87,7 @@ invariants below.
 go build -trimpath -o mgdl .
 GOOS=windows GOARCH=amd64 go build -trimpath -o mgdl.exe .
 go test -race ./...
-./build.sh    # release: windows/amd64, darwin/arm64+amd64, linux/amd64 into dist/ + SHA256SUMS
+./build.sh    # release: windows, linux, freebsd, darwin (amd64+arm64) into dist/ + SHA256SUMS
 ```
 
 `build.sh` builds static (`CGO_ENABLED=0`), stripped (`-s -w`) binaries and sets

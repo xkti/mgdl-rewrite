@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Cross-compile mgdl for Windows, macOS (Apple Silicon and Intel) and Linux.
+# Cross-compile mgdl for Windows, macOS (Apple Silicon and Intel), Linux and FreeBSD.
 # Binaries go to dist/, with SHA256SUMS. Usage: ./build.sh
 set -euo pipefail
 cd "$(dirname "$0")"
@@ -14,6 +14,8 @@ targets=(
   darwin/amd64
   linux/amd64
   linux/arm64
+  freebsd/amd64
+  freebsd/arm64
 )
 
 rm -rf dist
