@@ -237,7 +237,7 @@ func TestDryRunSpaceForAllLinks(t *testing.T) {
 			t.Fatal(err)
 		}
 	})
-	if strings.Count(stdout, "not enough disk space in ") != 1 || !strings.Contains(stdout, "a real run wouldn't start 2 links") ||
+	if strings.Count(stdout, "not enough disk space in ") != 1 || !strings.Contains(stdout, "a real run wouldn't start\n") ||
 		!strings.Contains(stdout, "All links: 2 files from 2 links") {
 		t.Fatalf("output:\n%s", stdout)
 	}

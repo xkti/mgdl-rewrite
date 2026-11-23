@@ -151,11 +151,6 @@ func dryRun(cfg *config, t *tree, ctl *controlFile, files []*node, space *spaceR
 	outf("%s", t.title())
 	outf("  output:  %s", t.baseDir(cfg.output))
 	outf("  control: %s", ctl.path)
-	if cfg.direct {
-		outf("  proxy:   none (direct)")
-	} else {
-		outf("  proxy:   %s", strings.Join(cfg.proxies, ", "))
-	}
 	mode := fmt.Sprintf("parallel, %s × %s", plural(cfg.jobs, "file"), plural(cfg.connections, "connection"))
 	if cfg.sequential {
 		mode = fmt.Sprintf("sequential, %s at once", plural(cfg.jobs, "file"))

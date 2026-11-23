@@ -571,7 +571,7 @@ func dryRunSpace(cfg *config, runs []*linkRun) {
 		files += len(lr.files)
 	}
 	outf("\nAll links: %s from %s", plural(files, "file"), plural(len(queued), "link"))
-	printSpace(spaceFor(cfg, queued), "a real run wouldn't start "+plural(len(queued), "link"))
+	printSpace(spaceFor(cfg, queued), "a real run wouldn't start")
 }
 
 // downloadAll is phase 2: one queue of every queued link's files, in link order,
