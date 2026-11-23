@@ -7,7 +7,7 @@
 
 Download from [releases](../../releases) for your operating system, or build using `go build -trimpath -o mgdl .`
 
-`./build.sh` can be used on Linux for cross-compiling Windows/Linux/Mac builds.
+`./build.sh` can be used on Linux for cross-compiling Windows/Linux/Mac/FreeBSD builds.
 
 #### Main features
 
