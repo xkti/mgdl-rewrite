@@ -261,7 +261,7 @@ func splitProxies(s string) []string {
 // shortUsage is what a usage error prints: the title and synopsis only.
 func shortUsage(w io.Writer) {
 	fmt.Fprintf(w, `mgdl %s - MEGA.nz downloader with on-the-fly decryption and verification
-Usage: mgdl [flags] LINK [LINK...] | mgdl [flags] -i links.txt
+Usage: mgdl [flags] LINK [LINK...] | mgdl [flags] -i links.txt [LINK...]
 For more info, run `+"`mgdl --help`"+`.
 `, version)
 }
