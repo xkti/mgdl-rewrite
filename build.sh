@@ -9,9 +9,11 @@ version=$(git describe --tags --always --dirty 2>/dev/null || echo dev)
 
 targets=(
   windows/amd64
+  windows/arm64
   darwin/arm64
   darwin/amd64
   linux/amd64
+  linux/arm64
 )
 
 rm -rf dist
